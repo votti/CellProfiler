@@ -1,16 +1,3 @@
-"""
-CellProfiler is distributed under the GNU General Public License.
-See the accompanying file LICENSE for details.
-
-Copyright (c) 2003-2009 Massachusetts Institute of Technology
-Copyright (c) 2009-2014 Broad Institute
-All rights reserved.
-
-Please see the AUTHORS file for credits.
-
-Website: http://www.cellprofiler.org
-"""
-
 import logging
 logger = logging.getLogger(__package__)
 import os.path
@@ -20,9 +7,10 @@ import sys
 
 if hasattr(sys, 'frozen'):
     path = os.path.split(os.path.abspath(sys.argv[0]))[0]
-    path = os.path.join(path, 'cellprofiler','icons')
+    path = os.path.join(path, 'artwork')
 else:
-    path = __path__[0]
+    path = os.path.join(os.path.dirname(os.path.dirname(__path__[0])),
+                        'artwork')
 
 image_cache = weakref.WeakValueDictionary()
 

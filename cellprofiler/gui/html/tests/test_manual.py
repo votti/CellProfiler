@@ -1,40 +1,46 @@
-"""
-CellProfiler is distributed under the GNU General Public License.
-See the accompanying file LICENSE for details.
-
-Copyright (c) 2003-2009 Massachusetts Institute of Technology
-Copyright (c) 2009-2014 Broad Institute
-All rights reserved.
-
-Please see the AUTHORS file for credits.
-
-Website: http://www.cellprofiler.org
-"""
-
 '''Tests for cellprofiler.gui.html.manual'''
 
 import os
 import re
-import unittest
 import tempfile
 import traceback
+import unittest
+
 import cellprofiler.gui.html.manual as M
-from cellprofiler.modules import get_module_names, instantiate_module
 import cellprofiler.preferences as cpprefs
+
 
 class TestManual(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
-        
+        # Monkey-patch RunImageJ to keep it from calling ImageJ during
+        # create_settings
+        from cellprofiler.modules.run_imagej import RunImageJ
+        from cellprofiler.settings import Text
+        self.old_make_command_choice = RunImageJ.make_command_choice
+        def make_command_choice(self, label, doc):
+            return Text(label, "None", doc=doc)
+        RunImageJ.make_command_choice = make_command_choice
+        self.old_populate_language_dictionary = \
+            RunImageJ.populate_language_dictionary
+        def populate_language_dictionary(self):
+            self.language_dictionary = dict(swedish="SwedishEngine")
+        RunImageJ.populate_language_dictionary = populate_language_dictionary
+
     def tearDown(self):
+        from cellprofiler.modules.run_imagej import RunImageJ
+        RunImageJ.make_command_choice = self.old_make_command_choice
+        RunImageJ.populate_language_dictionary = \
+            self.old_populate_language_dictionary
         for root, dirnames, filenames in os.walk(self.temp_dir, False):
             for x in filenames:
                 os.remove(os.path.join(root, x))
             for x in dirnames:
                 os.remove(os.path.join(root, x))
         os.rmdir(self.temp_dir)
-    
+
     def test_01_01_output_module_html(self):
+        from cellprofiler.modules import get_module_names, instantiate_module
         M.output_module_html(self.temp_dir)
         for module_name in sorted(get_module_names()):
             fd = None
@@ -50,7 +56,7 @@ class TestManual(unittest.TestCase):
                 self.assert_("Failed to open %s.html" %module_name)
             data = fd.read()
             fd.close()
-            
+
             #
             # Make sure that some nesting rules are obeyed.
             #
@@ -65,7 +71,7 @@ class TestManual(unittest.TestCase):
             for tag in tags_we_care_about:
                 for dd in (d, anti_d):
                     dd[tag] = [0, []]
-                    
+
             for p, dd in ((pattern, d),
                           (anti_pattern, anti_d)):
                 pos = 0
@@ -113,7 +119,7 @@ class TestManual(unittest.TestCase):
                 ):
                 tokens += [(pos, token) for pos in d[tag][LIST]]
                 tokens += [(pos, anti_token) for pos in anti_d[tag][LIST]]
-            
+
             tokens = sorted(tokens)
             S_INIT = 0
             S_AFTER_TABLE = 1
@@ -125,14 +131,14 @@ class TestManual(unittest.TestCase):
             S_AFTER_LI = 7
             S_AFTER_I = 8
             S_AFTER_B = 9
-            
+
             state_transitions = {
                 S_INIT: { T_TABLE: S_AFTER_TABLE,
                           T_OL: S_AFTER_OL,
                           T_UL: S_AFTER_UL,
                           T_I: S_AFTER_I,
                           T_B: S_AFTER_B },
-                S_AFTER_TABLE: { 
+                S_AFTER_TABLE: {
                     T_ANTI_TABLE: S_INIT,
                     T_TR: S_AFTER_TR
                 },
@@ -191,7 +197,7 @@ class TestManual(unittest.TestCase):
                 }
             }
             state = []
-            
+
             for pos, token in tokens:
                 self.assertTrue(
                     len(state) >= 0,
@@ -200,12 +206,12 @@ class TestManual(unittest.TestCase):
                                             max(pos + 30, len(data))])
                 )
                 top_state, start_pos = (S_INIT,0) if len(state) == 0 else state[-1]
-                
+
                 self.assertTrue(
                     state_transitions[top_state].has_key(token),
                     "Nesting error in %s near position %d (%s)" %
-                    (module_name, pos, data[max(0,pos - 30):
-                                            min(pos + 30, len(data))]))
+                    (module_name, pos, data[max(0,pos - 50):pos]+"^^^"+
+                     data[pos:min(pos + 50, len(data))]))
                 next_state = state_transitions[top_state][token]
                 if next_state == S_INIT:
                     state.pop()
@@ -223,16 +229,14 @@ class TestManual(unittest.TestCase):
             for tag in tags_we_care_about:
                 if d.has_key(tag):
                     self.assertTrue(anti_d.has_key(tag),
-                                    "Missing closing </%s> tag in %s" % 
+                                    "Missing closing </%s> tag in %s" %
                                     (tag, module_name))
                     self.assertEqual(
                         d[tag][COUNT], anti_d[tag][COUNT],
                         "Found %d <%s>, != %d </%s> in %s" %
-                        (d[tag][COUNT], tag, 
+                        (d[tag][COUNT], tag,
                          anti_d[tag][COUNT], tag, module_name))
                 else:
                     self.assertFalse(anti_d.has_key(tag),
                                      "Missing opening <%s> tag in %s" %
                                      (tag, module_name))
-            
-            

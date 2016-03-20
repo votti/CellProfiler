@@ -1,37 +1,28 @@
 '''<b>Image Math</b> performs simple mathematical operations on image intensities.
 <hr>
 This module can perform addition, subtraction, multiplication, division, or averaging
-of two or more image intensities, as well as inversion, log transform, or scaling by 
+of two or more image intensities, as well as inversion, log transform, or scaling by
 a constant for individual image intensities.
 
-<p>Keep in mind that after the requested operations are carried out, the final image 
+<p>Keep in mind that after the requested operations are carried out, the final image
 may have a substantially different range of pixel
 intensities than the original. CellProfiler
-assumes that the image is scaled from 0 &ndash; 1 for object identification and 
-display purposes, so additional rescaling may be needed. Please see the 
+assumes that the image is scaled from 0 &ndash; 1 for object identification and
+display purposes, so additional rescaling may be needed. Please see the
 <b>RescaleIntensity</b> module for more scaling options.</p>
 
 See also <b>ApplyThreshold</b>, <b>RescaleIntensity</b>, <b>CorrectIlluminationCalculate</b>.
 '''
-# CellProfiler is distributed under the GNU General Public License.
-# See the accompanying file LICENSE for details.
-# 
-# Copyright (c) 2003-2009 Massachusetts Institute of Technology
-# Copyright (c) 2009-2014 Broad Institute
-# 
-# Please see the AUTHORS file for credits.
-# 
-# Website: http://www.cellprofiler.org
-
 
 import numpy as np
-from contrib.english import ordinal
 
 import cellprofiler.cpimage as cpi
 import cellprofiler.cpmodule as cpm
+import cellprofiler.measurements as cpmeas
 import cellprofiler.settings as cps
 from cellprofiler.settings import YES, NO
-import cellprofiler.measurements as cpmeas
+import inflect
+
 
 O_ADD = "Add"
 O_SUBTRACT = "Subtract"
@@ -39,6 +30,7 @@ O_DIFFERENCE = "Absolute Difference"
 O_MULTIPLY = "Multiply"
 O_DIVIDE = "Divide"
 O_AVERAGE = "Average"
+O_MINIMUM = "Minimum"
 O_MAXIMUM = "Maximum"
 O_INVERT = "Invert"
 O_COMPLEMENT = "Complement"
@@ -47,6 +39,12 @@ O_LOG_TRANSFORM = "Log transform (base 2)"
 O_NONE = "None"
 # Combine is now obsolete - done by Add now, but we need the string for upgrade_settings
 O_COMBINE = "Combine"
+O_OR = "Or"
+O_AND = "And"
+O_NOT = "Not"
+O_EQUALS = "Equals"
+
+BINARY_OUTPUT_OPS = [O_AND, O_OR, O_NOT, O_EQUALS]
 
 IM_IMAGE = "Image"
 IM_MEASUREMENT = "Measurement"
@@ -61,7 +59,7 @@ FIXED_SETTING_COUNT = 8
 
 
 class ImageMath(cpm.CPModule):
-    
+
     category = "Image Processing"
     variable_revision_number = 4
     module_name = "ImageMath"
@@ -75,10 +73,13 @@ class ImageMath(cpm.CPModule):
 
         # other settings
         self.operation = cps.Choice(
-            "Operation", 
-            [O_ADD, O_SUBTRACT, O_DIFFERENCE, O_MULTIPLY, O_DIVIDE, O_AVERAGE, O_MAXIMUM, O_INVERT, O_LOG_TRANSFORM, O_LOG_TRANSFORM_LEGACY, O_NONE], doc="""
-            Select the operation to perform. Note that if more than two images are chosen, 
-            then operations will be performed sequentially from first to last, e.g., 
+            "Operation",
+            [O_ADD, O_SUBTRACT, O_DIFFERENCE, O_MULTIPLY, O_DIVIDE, O_AVERAGE,
+             O_MINIMUM, O_MAXIMUM, O_INVERT,
+             O_LOG_TRANSFORM, O_LOG_TRANSFORM_LEGACY,
+             O_AND, O_OR, O_NOT, O_EQUALS, O_NONE], doc="""
+            Select the operation to perform. Note that if more than two images are chosen,
+            then operations will be performed sequentially from first to last, e.g.,
             for "Divide", (Image1 / Image2) / Image3
             <ul>
             <li><i>%(O_ADD)s:</i> Adds the first image to the second, and so on.</li>
@@ -86,61 +87,81 @@ class ImageMath(cpm.CPModule):
             <li><i>%(O_DIFFERENCE)s:</i> The absolute value of the difference between the first and second images.</li>
             <li><i>%(O_MULTIPLY)s:</i> Multiplies the first image by the second.</li>
             <li><i>%(O_DIVIDE)s:</i> Divides the first image by the second.</li>
-            <li><i>%(O_AVERAGE)s</i> Calculates the mean intensity of the images loaded in the module.  
-            This is equivalent to the Add option divided by the number of images loaded 
-            by this module.  If you would like to average all of the images in 
-            an entire pipeline, i.e., across cycles, you should instead use the <b>CorrectIlluminationCalculate</b> module 
+            <li><i>%(O_AVERAGE)s</i> Calculates the mean intensity of the images loaded in the module.
+            This is equivalent to the Add option divided by the number of images loaded
+            by this module.  If you would like to average all of the images in
+            an entire pipeline, i.e., across cycles, you should instead use the <b>CorrectIlluminationCalculate</b> module
             and choose the <i>All</i> (vs. <i>Each</i>) option.</li>
-            <li><i>%(O_MAXIMUM)s:</i> Returns the element-wise maximum value at each pixel location.</li>   
+            <li><i>%(O_MINIMUM)s:</i> Returns the element-wise minimum value at each pixel location.</li>
+            <li><i>%(O_MAXIMUM)s:</i> Returns the element-wise maximum value at each pixel location.</li>
             <li><i>%(O_INVERT)s:</i> Subtracts the image intensities from 1. This makes the darkest
             color the brightest and vice-versa.</li>
-            <li><i>%(O_LOG_TRANSFORM)s</i> Log transforms each pixel's intensity. 
+            <li><i>%(O_LOG_TRANSFORM)s</i> Log transforms each pixel's intensity.
             The actual function is log<sub>2</sub>(image + 1), transforming values from 0 to 1 into values from 0 to 1.</li>
             <li><i>%(O_LOG_TRANSFORM_LEGACY)s</i> Log<sub>2</sub> transform for backwards compatibility.</li>
-            <li><i>%(O_NONE)s</i> This option is useful if you simply want to select some of the later 
+            <li><i>%(O_NONE)s</i> This option is useful if you simply want to select some of the later
             options in the module, such as adding, multiplying, or exponentiating your image by a constant.</li>
-            </ul> 
-            <p>Note that <i>%(O_INVERT)s</i>, <i>%(O_LOG_TRANSFORM)s</i>, and <i>%(O_NONE)s</i> operate on only a single image.</p>
+            </ul>
+            <p>The following are operations that produce binary images. In a
+            binary image, the foreground has a truth value of "true" and the
+            background has a truth value of "false". The
+            operations, <i>%(O_OR)s, %(O_AND)s and %(O_NOT)s</i> will convert
+            the input images to binary by changing all zero values to
+            background (false) and all other values to foreground (true).
+            <ul>
+            <li><i>%(O_AND)s:</i> a pixel in the output image is in the
+            foreground only if all corresponding pixels in the input images are
+            also in the foreground.</li>
+            <li><i>%(O_OR)s:</i> a pixel in the output image is in the
+            foreground if a corresponding pixel in any of the input images is
+            also in the foreground.</li>
+            <li><i>%(O_NOT)s:</i> the foreground of the input image becomes
+            the background of the output image and vice-versa.</li>
+            <li><i>%(O_EQUALS)s:</i> a pixel in the output image is in the
+            foreground if the corresponding pixels in the input images have
+            the same value.</li>
+            </ul>
+            <p>Note that <i>%(O_INVERT)s</i>, <i>%(O_LOG_TRANSFORM)s</i>, <i>%(O_LOG_TRANSFORM_LEGACY)s</i> and <i>%(O_NONE)s</i> operate on only a single image.</p>
             """%globals())
         self.divider_top = cps.Divider(line=False)
-        
+
         self.exponent = cps.Float(
             "Raise the power of the result by", 1, doc="""
             Enter an exponent to raise the result to *after* the chosen operation""")
-        
+
         self.after_factor = cps.Float(
             "Multiply the result by", 1, doc="""
             Enter a factor to multiply the result by *after* the chosen operation""")
-        
+
         self.addend = cps.Float(
             "Add to result", 0, doc ="""
             Enter a number to add to the result *after* the chosen operation""")
-        
+
         self.truncate_low = cps.Binary(
             "Set values less than 0 equal to 0?", True, doc="""
-            Values outside the range 0 to 1 might not be handled well by other modules. 
+            Values outside the range 0 to 1 might not be handled well by other modules.
             Select <i>%(YES)s</i> to set negative values to 0."""%globals())
-        
+
         self.truncate_high = cps.Binary(
             "Set values greater than 1 equal to 1?", True, doc ="""
-            Values outside the range 0 to 1 might not be handled well by other modules. 
+            Values outside the range 0 to 1 might not be handled well by other modules.
             Select <i>%(YES)s</i> to set values greater than 1 to a maximum value of 1."""%globals())
-        
+
         self.ignore_mask = cps.Binary(
             "Ignore the image masks?", False, doc = """
-            Usually, the smallest mask of all image operands is applied after 
-            image math has been completed. Select <i>%(YES)s</i> to set 
-            equal to zero all previously masked pixels and operate on the masked 
+            Usually, the smallest mask of all image operands is applied after
+            image math has been completed. Select <i>%(YES)s</i> to set
+            equal to zero all previously masked pixels and operate on the masked
             images as if no mask had been applied."""%globals())
-        
+
         self.output_image_name = cps.ImageNameProvider(
             "Name the output image", "ImageAfterMath", doc="""
             Enter a name for the resulting image.""")
-        
+
         self.add_button = cps.DoSomething("", "Add another image", self.add_image)
-        
+
         self.divider_bottom = cps.Divider(line=False)
-    
+
     def add_image(self, removable=True):
         # The text for these settings will be replaced in renumber_settings()
         group = cps.SettingsGroup()
@@ -155,46 +176,48 @@ class ImageMath(cpm.CPModule):
             prior to this module to calculate the median intensity, then
             select <i>%(IM_MEASUREMENT)s</i> and use the median intensity measurement as
             the denominator"""%globals()))
-        
+
         group.append("image_name", cps.ImageNameSubscriber("", "",doc="""
             Selec the image that you want to use for this operation."""))
-        
+
         group.append("measurement", cps.Measurement(
             "Measurement", lambda : cpmeas.IMAGE,"",doc="""
             This is a measurement made on the image. The value of the
             measurement is used for the operand for all of the pixels of the
             other operand's image."""))
-        
+
         group.append("factor", cps.Float("", 1,doc="""
             Enter the number that you would like to multiply the above image by. This multiplication
             is applied before other operations."""))
-        
+
         if removable:
             group.append("remover", cps.RemoveSettingButton("", "Remove this image", self.images, group))
         group.append("divider", cps.Divider())
         self.images.append(group)
-        
+
     def renumber_settings(self):
+        inflection = inflect.engine()
+
         for idx, image in enumerate(self.images):
-            image.image_name.text = "Select the %s image"%(ordinal(idx + 1))
-            image.factor.text = "Multiply the %s image by"%ordinal(idx + 1)
+            image.image_name.text = "Select the %s image"%(inflection.number_to_words(inflection.ordinal(idx + 1)))
+            image.factor.text = "Multiply the %s image by"%inflection.number_to_words(inflection.ordinal(idx + 1))
 
     def settings(self):
         result = [self.operation, self.exponent, self.after_factor, self.addend,
                   self.truncate_low, self.truncate_high, self.ignore_mask,
                   self.output_image_name]
         for image in self.images:
-            result += [image.image_or_measurement, image.image_name, 
+            result += [image.image_or_measurement, image.image_name,
                        image.factor, image.measurement]
         return result
 
     @property
     def operand_count(self):
         '''# of operands, taking the operation into consideration'''
-        if self.operation.value in (O_INVERT, O_LOG_TRANSFORM, O_NONE):
+        if self.operation.value in (O_INVERT, O_LOG_TRANSFORM, O_LOG_TRANSFORM_LEGACY, O_NONE, O_NOT):
             return 1
         return len(self.images)
-    
+
     def visible_settings(self):
         result = [self.operation, self.output_image_name, self.divider_top]
         self.renumber_settings()
@@ -202,12 +225,15 @@ class ImageMath(cpm.CPModule):
         for index in range(self.operand_count):
             image = self.images[index]
             if single_image:
-                result += [image.image_name, image.factor]
+                result += [image.image_name]
             else:
-                result += [image.image_or_measurement,
-                           image.image_name 
-                           if image.image_or_measurement == IM_IMAGE
-                           else image.measurement, image.factor]
+                result += [image.image_or_measurement]
+                if image.image_or_measurement == IM_IMAGE:
+                    result += [image.image_name]
+                else:
+                    result += [image.measurement]
+            if self.operation not in BINARY_OUTPUT_OPS:
+                result += [image.factor]
             if image.removable:
                 result += [image.remover]
             result += [image.divider]
@@ -217,19 +243,22 @@ class ImageMath(cpm.CPModule):
         else:
             result += [self.add_button, self.divider_bottom]
 
-        result += [self.exponent, self.after_factor, 
-                   self.addend, self.truncate_low, self.truncate_high, self.ignore_mask]
+        if self.operation not in BINARY_OUTPUT_OPS:
+            result += [
+                self.exponent, self.after_factor, self.addend,
+                self.truncate_low, self.truncate_high]
+        result += [self.ignore_mask]
         return result
 
     def help_settings(self):
         result = [self.operation, self.output_image_name, ]
         for image in self.images:
-            result += [image.image_or_measurement, image.image_name, 
+            result += [image.image_or_measurement, image.image_name,
                        image.measurement, image.factor]
         result += [self.exponent, self.after_factor, self.addend,
                   self.truncate_low, self.truncate_high, self.ignore_mask]
         return result
-    
+
     def prepare_settings(self, setting_values):
         value_count = len(setting_values)
         assert (value_count - FIXED_SETTING_COUNT) % IMAGE_SETTING_COUNT == 0
@@ -247,7 +276,7 @@ class ImageMath(cpm.CPModule):
         wants_image = [image.image_or_measurement == IM_IMAGE
                        for image in self.images]
         if self.operation.value in \
-           (O_INVERT, O_LOG_TRANSFORM, O_LOG_TRANSFORM_LEGACY, O_NONE):
+           (O_INVERT, O_LOG_TRANSFORM, O_LOG_TRANSFORM_LEGACY, O_NOT, O_NONE):
             # these only operate on the first image
             image_names = image_names[:1]
             image_factors = image_factors[:1]
@@ -283,14 +312,15 @@ class ImageMath(cpm.CPModule):
         # Multiply images by their factors
         #
         for i, image_factor in enumerate(image_factors):
-            if image_factor != 1:
+            if image_factor != 1 and self.operation not in BINARY_OUTPUT_OPS:
                 pixel_data[i] = pixel_data[i] * image_factors[i]
 
         output_pixel_data = pixel_data[0]
         output_mask = masks[0]
 
         opval = self.operation.value
-        if opval in (O_ADD, O_SUBTRACT, O_DIFFERENCE, O_MULTIPLY, O_DIVIDE, O_AVERAGE, O_MAXIMUM):
+        if opval in (O_ADD, O_SUBTRACT, O_DIFFERENCE, O_MULTIPLY, O_DIVIDE,
+                     O_AVERAGE, O_MAXIMUM, O_MINIMUM, O_AND, O_OR, O_EQUALS):
             # Binary operations
             if opval in (O_ADD, O_AVERAGE):
                 op = np.add
@@ -299,22 +329,36 @@ class ImageMath(cpm.CPModule):
             elif opval == O_DIFFERENCE:
                 op = lambda x, y: np.abs(np.subtract(x, y))
             elif opval == O_MULTIPLY:
-                if output_pixel_data.dtype == np.bool and \
-                   all([pd.dtype == np.bool for pd in pixel_data[1:]]):
+                if all([pd.dtype == np.bool for pd in pixel_data
+                        if not np.isscalar(pd)]):
                     op = np.logical_and
                 else:
                     op = np.multiply
+            elif opval == O_MINIMUM:
+                op = np.minimum
             elif opval == O_MAXIMUM:
                 op = np.maximum
+            elif opval == O_AND:
+                op = np.logical_and
+            elif opval == O_OR:
+                op = np.logical_or
+            elif opval == O_EQUALS:
+                output_pixel_data = np.ones(pixel_data[0].shape, bool)
+                comparitor = pixel_data[0]
             else:
                 op = np.divide
             for pd, mask in zip(pixel_data[1:], masks[1:]):
                 if not np.isscalar(pd) and output_pixel_data.ndim != pd.ndim:
                     if output_pixel_data.ndim == 2:
                         output_pixel_data = output_pixel_data[:,:,np.newaxis]
+                        if opval == O_EQUALS and not np.isscalar(comparitor):
+                            comparitor = comparitor[:, :, np.newaxis]
                     if pd.ndim == 2:
                         pd = pd[:,:,np.newaxis]
-                output_pixel_data = op(output_pixel_data, pd)
+                if opval == O_EQUALS:
+                    output_pixel_data = output_pixel_data & (comparitor == pd)
+                else:
+                    output_pixel_data = op(output_pixel_data, pd)
                 if self.ignore_mask == True:
                     continue
                 else:
@@ -325,13 +369,15 @@ class ImageMath(cpm.CPModule):
             if opval == O_AVERAGE:
                 output_pixel_data /= sum(image_factors)
         elif opval == O_INVERT:
-            output_pixel_data = 1 - output_pixel_data 
+            output_pixel_data = 1 - output_pixel_data
+        elif opval == O_NOT:
+            output_pixel_data = ~ output_pixel_data
         elif opval == O_LOG_TRANSFORM:
             output_pixel_data = np.log2(output_pixel_data+1)
         elif opval == O_LOG_TRANSFORM_LEGACY:
             output_pixel_data = np.log2(output_pixel_data)
         elif opval == O_NONE:
-            pass
+            output_pixel_data = output_pixel_data.copy()
         else:
             raise NotImplementedError("The operation %s has not been implemented"%opval)
 
@@ -339,36 +385,38 @@ class ImageMath(cpm.CPModule):
         # set mask to none
         if np.isscalar(output_mask):
             output_mask = None
-        #
-        # Post-processing: exponent, multiply, add
-        #
-        if self.exponent.value != 1:
-            output_pixel_data **= self.exponent.value
-        if self.after_factor.value != 1:
-            output_pixel_data *= self.after_factor.value
-        if self.addend.value != 0:
-            output_pixel_data += self.addend.value
+        if opval not in BINARY_OUTPUT_OPS:
+            #
+            # Post-processing: exponent, multiply, add
+            #
+            if self.exponent.value != 1:
+                output_pixel_data **= self.exponent.value
+            if self.after_factor.value != 1:
+                output_pixel_data *= self.after_factor.value
+            if self.addend.value != 0:
+                output_pixel_data += self.addend.value
 
-        #
-        # truncate values
-        #
-        if self.truncate_low.value:
-            output_pixel_data[output_pixel_data < 0] = 0
-        if self.truncate_high.value:
-            output_pixel_data[output_pixel_data > 1] = 1
+            #
+            # truncate values
+            #
+            if self.truncate_low.value:
+                output_pixel_data[output_pixel_data < 0] = 0
+            if self.truncate_high.value:
+                output_pixel_data[output_pixel_data > 1] = 1
 
         #
         # add the output image to the workspace
         #
-        crop_mask = (smallest_image.crop_mask 
+        crop_mask = (smallest_image.crop_mask
                      if smallest_image.has_crop_mask else None)
-        masking_objects = (smallest_image.masking_objects 
+        masking_objects = (smallest_image.masking_objects
                            if smallest_image.has_masking_objects else None)
         output_image = cpi.Image(output_pixel_data,
                                  mask = output_mask,
-                                 crop_mask = crop_mask, 
+                                 crop_mask = crop_mask,
                                  parent_image = images[0],
-                                 masking_objects = masking_objects)
+                                 masking_objects = masking_objects,
+                                 convert = False)
         workspace.image_set.add(self.output_image_name.value, output_image)
 
         #
@@ -386,7 +434,9 @@ class ImageMath(cpm.CPModule):
         columns = (len(pixel_data) + 1) / 2
         figure.set_subplots((columns, 2))
         for i in range(len(pixel_data)):
-            show = figure.subplot_imshow if pixel_data[i].ndim == 3 else figure.subplot_imshow_bw
+            show = figure.subplot_imshow if pixel_data[i].ndim == 3 else \
+                figure.subplot_imshow_bw if pixel_data[i].dtype.kind == 'b'\
+                else figure.subplot_imshow_grayscale
             show(i % columns, int(i / columns),
                  pixel_data[i],
                  title=display_names[i],
@@ -401,10 +451,10 @@ class ImageMath(cpm.CPModule):
                 return
         raise cps.ValidationError("At least one of the operands must be an image",
                                   op.image_or_measurement)
-    
-    def upgrade_settings(self, setting_values, variable_revision_number, 
+
+    def upgrade_settings(self, setting_values, variable_revision_number,
                          module_name, from_matlab):
-        if (from_matlab and module_name == 'Subtract' and 
+        if (from_matlab and module_name == 'Subtract' and
             variable_revision_number == 3):
             subtract_image_name, basic_image_name, resulting_image_name,\
             multiply_factor_1, multiply_factor_2, truncate = setting_values
@@ -424,13 +474,13 @@ class ImageMath(cpm.CPModule):
             variable_revision_number = 1
         if (from_matlab and module_name == 'Combine' and
             variable_revision_number == 3):
-            names_and_weights = [ 
+            names_and_weights = [
                 (name, weight)
                 for name, weight in zip(setting_values[:3],
                                         setting_values[4:])
                 if name.lower() != cps.DO_NOT_USE.lower()]
-            
-            multiplier = 1.0/sum([float(weight) 
+
+            multiplier = 1.0/sum([float(weight)
                                   for name, weight in names_and_weights])
             output_image = setting_values[3]
             setting_values = [O_ADD,  # Operation
@@ -453,7 +503,7 @@ class ImageMath(cpm.CPModule):
                               1,1,1,1,1,cps.NO,cps.NO, output_image]
             module_name = 'ImageMath'
             variable_revision_number = 2
-        if (from_matlab and module_name == 'Multiply' and 
+        if (from_matlab and module_name == 'Multiply' and
             variable_revision_number == 1):
             image1, image2, output_image = setting_values
             setting_values = [image1, image2, cps.DO_NOT_USE,
@@ -461,7 +511,7 @@ class ImageMath(cpm.CPModule):
                               output_image]
             module_name = 'ImageMath'
             variable_revision_number = 2
-            
+
         if (from_matlab and variable_revision_number == 1 and
             module_name == 'ImageMath'):
             image_names = [setting_values[1]]
@@ -471,10 +521,10 @@ class ImageMath(cpm.CPModule):
             # The user could type in a constant for the second image name
             try:
                 factors += [float(setting_values[2]) *
-                            float(setting_values[5])]    
+                            float(setting_values[5])]
             except:
                 if setting_values[2] != cps.DO_NOT_USE:
-                    image_names += [setting_values[2]]  
+                    image_names += [setting_values[2]]
                     input_factors += [float(setting_values[5])]
             exponent = 1.0
             multiplier = 1.0
@@ -506,7 +556,7 @@ class ImageMath(cpm.CPModule):
                 setting_values += [image_name, input_factor]
             from_matlab = False
             variable_revision_number = 1
-            
+
         if (from_matlab and variable_revision_number == 2 and
             module_name == 'ImageMath'):
             image_names = [setting_values[0]]
@@ -518,10 +568,10 @@ class ImageMath(cpm.CPModule):
                 try:
                     factors += [float(setting_values[i]) *
                                 float(setting_values[i+4])]
-                               
+
                 except:
                     if setting_values[i] != cps.DO_NOT_USE:
-                        image_names += [setting_values[i]]  
+                        image_names += [setting_values[i]]
                         input_factors += [float(setting_values[i+4])]
 
             exponent = float(setting_values[7])

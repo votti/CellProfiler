@@ -1,27 +1,52 @@
 """Directory for tests of individual modules
-
-CellProfiler is distributed under the GNU General Public License.
-See the accompanying file LICENSE for details.
-
-Copyright (c) 2003-2009 Massachusetts Institute of Technology
-Copyright (c) 2009-2014 Broad Institute
-All rights reserved.
-
-Please see the AUTHORS file for credits.
-
-Website: http://www.cellprofiler.org
 """
-
+import logging
+logger = logging.getLogger(__name__)
 import base64
+from bioformats.formatwriter import write_image, convert_pixels_to_buffer
+from bioformats import PT_UINT8, PT_UINT16
+from bioformats import OMEXML
+from bioformats.omexml import DO_XYCZT, OM_SAMPLES_PER_PIXEL, OM_BITS_PER_SAMPLE
+import hashlib
+import javabridge
+import numpy as np
 import os
 import unittest
+from urllib import urlretrieve, URLopener
+from urllib2 import HTTPError
 import tempfile
 
 import scipy.io.matlab.mio
 from cellprofiler.preferences import set_headless
 set_headless()
+from cellprofiler.modules import builtin_modules, all_modules
+
+__temp_example_images_folder = None
+
+cp_logo_url = "https://raw.githubusercontent.com/CellProfiler/CellProfiler/master/artwork/CP_logo.png"
+cp_logo_url_folder, cp_logo_url_filename = cp_logo_url.rsplit("/", 1)
+cp_logo_url_shape = (70, 187, 3)
+
+class TestAllModules(unittest.TestCase):
+    '''Test things having to do with modules'''
+    optional_modules = ('classifypixels', 'ilastik_pixel_classification')
+    def test_01_01_import_all(self):
+        #
+        # Make sure that we can import every module.
+        # Tests have a habit of importing the module they test and then,
+        # they are not included in the test suite because they don't import
+        #
+        found_modules = map(
+            (lambda x:x.__module__.rsplit(".", 1)[-1]), all_modules.values())
+        for module_name in \
+            filter((lambda x:x not in self.optional_modules), builtin_modules):
+            self.assertTrue(
+                module_name in found_modules,
+                "%s is missing from the list of available modules" %
+                module_name)
 
 def example_images_directory():
+    global __temp_example_images_folder
     if os.environ.has_key('CP_EXAMPLEIMAGES'):
         return os.environ['CP_EXAMPLEIMAGES']
     fyle = os.path.abspath(__file__)
@@ -34,9 +59,28 @@ def example_images_directory():
         path = os.path.join(d,imagedir)
         if os.path.exists(path):
             return path
-    raise Exception("Can't find example images; please set $CP_EXAMPLEIMAGES.")
+    if __temp_example_images_folder is None:
+        __temp_example_images_folder = tempfile.mkdtemp(
+            prefix="cp_exampleimages")
+        logger.warn("Creating temporary folder %s for example images" %
+                    __temp_example_images_folder)
+    return __temp_example_images_folder
 
+def svn_mirror_url():
+    '''Return the URL for the SVN mirror
+
+    Use the value of the environment variable, "CP_SVNMIRROR_URL" with
+    a default of http://cellprofiler.org/svnmirror.
+    '''
+    return os.environ.get("CP_SVNMIRROR_URL",
+                          "http://cellprofiler.org/svnmirror")
+
+def example_images_url():
+    return svn_mirror_url() + "/" + "ExampleImages"
+
+__temp_test_images_folder = None
 def testimages_directory():
+    global __temp_test_images_folder
     if os.environ.has_key('CP_TESTIMAGES'):
         return os.environ['CP_TESTIMAGES']
     fyle = os.path.abspath(__file__)
@@ -48,15 +92,23 @@ def testimages_directory():
     path = os.path.join(d, "TestImages")
     if os.path.exists(path):
         return path
-    raise Exception("Can't find directory for test images; please set $CP_TESTIMAGES.")
-    
+    if __temp_test_images_folder is None:
+        __temp_test_images_folder = tempfile.mkdtemp(
+            prefix="cp_testimages")
+        logger.warn("Creating temporary folder %s for test images" %
+                    __temp_test_images_folder)
+    return __temp_test_images_folder
+
+def testimages_url():
+    return svn_mirror_url() + "/" + "TestImages"
+
 class testExampleImagesDirectory(unittest.TestCase):
     def test_00_00_got_something(self):
         self.assertTrue(example_images_directory(), "You need to have the example images checked out to run these tests")
 
 def load_pipeline(test_case, encoded_data):
     """Load a pipeline from base-64 encoded data
-    
+
     test_case - an instance of unittest.TestCase
     encoded_data - a pipeline encoded using base-64
     The magic incantation to do the above is the following:
@@ -79,36 +131,178 @@ def load_pipeline(test_case, encoded_data):
     finally:
         matfh.close()
     def blowup(pipeline,event):
-        if isinstance(event, (cellprofiler.pipeline.RunExceptionEvent, 
+        if isinstance(event, (cellprofiler.pipeline.RunExceptionEvent,
                               cellprofiler.pipeline.LoadExceptionEvent)):
             test_case.assertFalse(event.error.message)
     pipeline.add_listener(blowup)
     pipeline.create_from_handles(handles)
     return pipeline
 
+def maybe_download_example_image(folders, file_name, shape=None):
+    '''Download the given ExampleImages file if not in the directory
+
+    folders - sequence of subfolders starting at ExampleImages
+    file_name - name of file to fetch
+
+    Image will be downloaded if not present to CP_EXAMPLEIMAGES directory.
+
+    Returns the local path to the file which is often useful.
+    '''
+    if shape is None:
+        shape = (20, 30)
+    local_path = os.path.join(*tuple([
+        example_images_directory()] + folders + [file_name]))
+    if not os.path.exists(local_path):
+        directory = os.path.join(*tuple([
+            example_images_directory()] + folders))
+        if not os.path.isdir(directory):
+            os.makedirs(directory)
+        r = np.random.RandomState()
+        r.seed(np.frombuffer(
+            hashlib.sha1("/".join(folders) + file_name).digest(),
+            np.uint8))
+        img = (r.uniform(size=shape) * 255).astype(np.uint8)
+        write_image(local_path, img, PT_UINT8)
+    return local_path
+
+def make_12_bit_image(folder, filename, shape):
+    '''Create a 12-bit image of the desired shape
+
+    folder - subfolder of example images directory
+    filename - filename for image file
+    shape - 2-tuple or 3-tuple of the dimensions of the image. The axis order
+            is i, j, c or y, x, c
+    '''
+    r = np.random.RandomState()
+    r.seed(np.frombuffer(
+        hashlib.sha1("/".join([folder, filename])).digest(),
+        np.uint8))
+    img = (r.uniform(size=shape) * 4095).astype(np.uint16)
+    path = os.path.join(example_images_directory(), folder, filename)
+    if not os.path.isdir(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+
+    write_image(path, img, PT_UINT16)
+    #
+    # Now go through the file and find the TIF bits per sample IFD (#258) and
+    # change it from 16 to 12.
+    #
+    with open(path, "rb") as fd:
+        data = np.frombuffer(fd.read(), np.uint8).copy()
+    offset = np.frombuffer(data[4:8].data, np.uint32)[0]
+    nentries = np.frombuffer(data[offset:offset+2], np.uint16)[0]
+    ifds = []
+    # Get the IFDs we don't modify
+    for idx in range(nentries):
+        ifd = data[offset+2+idx*12:offset+14+idx*12]
+        code = ifd[0] + 256 * ifd[1]
+        if code not in (258, 281):
+            ifds.append(ifd)
+    ifds += [
+        # 12 bits/sample
+        np.array([2, 1, 3, 0, 1, 0, 0, 0, 12, 0, 0, 0], np.uint8 ),
+        # max value = 4095
+        np.array([25, 1, 3, 0, 1, 0, 0, 0, 255, 15, 0, 0], np.uint8)]
+    ifds = sorted(ifds, cmp = (lambda a, b: cmp(a.tolist(), b.tolist())))
+    old_end = offset + 2 + nentries * 12
+    new_end = offset + 2 + len(ifds) *12
+    diff = new_end-old_end
+    #
+    # Fix up the IFD offsets if greater than "offset"
+    #
+    for ifd in ifds:
+        count = np.frombuffer(ifd[4:8].data, np.uint32)[0]
+        if count > 4:
+            ifd_off = np.array(
+                [np.frombuffer(ifd[8:12].data, np.uint32)[0]]) + diff
+            if ifd_off > offset:
+                ifd[8:12] = np.frombuffer(ifd_off.data, np.uint8)
+    new_data = np.zeros(len(data)+diff, np.uint8)
+    new_data[:offset] = data[:offset]
+    new_data[offset] = len(ifds) % 256
+    new_data[offset+1] = int(len(ifds) / 256)
+    for idx, ifd in enumerate(ifds):
+        new_data[offset+2+idx*12:offset+14+idx*12] = ifd
+    new_data[new_end:] = data[old_end:]
+
+    with open(path, "wb") as fd:
+        fd.write(new_data.data)
+    return path
+
+def maybe_download_example_images(folders, file_names):
+    '''Download multiple files to the example images directory
+
+    folders - sequence of subfolders of ExampleImages
+    file_names - sequence of file names to be fetched from the single directory
+                described by the list of folders
+
+    Returns the local directory containing the images.
+    '''
+    for file_name in file_names:
+        maybe_download_example_image(folders, file_name)
+    return os.path.join(example_images_directory(), *folders)
+
+def maybe_download_sbs():
+    '''Download the SBS dataset to its expected location if necessary'''
+    files = []
+    for channel in 1,2:
+        idx = 1
+        for row in "ABCDEFGH":
+            for col in range(1, 13):
+                files.append("Channel%d-%02d-%s-%02d.tif" % (
+                    channel, idx, row, col))
+                idx += 1
+
+    path = maybe_download_example_images(["ExampleSBSImages"], files)
+    #
+    # Create the matlab files
+    #
+    import scipy.io.matlab.mio
+    for filename in ["Channel1ILLUM.mat", "Channel2ILLUM.mat"]:
+        pixels = np.ones((20, 30))
+        scipy.io.matlab.mio.savemat(
+            os.path.join(path, filename), {"Image":pixels}, format='5')
+    return path
+
+def maybe_download_fly():
+    '''Download the fly example directory'''
+    return maybe_download_example_images(
+        ["ExampleFlyImages"],
+        ["01_POS002_D.TIF", "01_POS002_F.TIF", "01_POS002_R.TIF",
+         "01_POS076_D.TIF", "01_POS076_F.TIF", "01_POS076_R.TIF",
+         "01_POS218_D.TIF", "01_POS218_F.TIF", "01_POS218_R.TIF"])
+
+def maybe_download_tesst_image( file_name):
+    '''Download the given TestImages file if not in the directory
+
+    file_name - name of file to fetch
+
+    Image will be downloaded if not present to CP_EXAMPLEIMAGES directory.
+    '''
+    local_path = os.path.join(testimages_directory(), file_name)
+    if not os.path.exists(local_path):
+        url = testimages_url() + "/" + file_name
+        try:
+            URLopener().retrieve(url, local_path)
+        except IOError, e:
+            # This raises the "expected failure" exception.
+            def bad_url(e=e):
+                raise e
+            unittest.expectedFailure(bad_url)()
+    return local_path
+
 def read_example_image(folder, file_name, **kwargs):
     '''Read an example image from one of the example image directories
-    
+
     folder - folder containing images, e.g. "ExampleFlyImages"
-    
+
     file_name - the name of the file within the folder
-    
+
     **kwargs - any keyword arguments are passed onto load_image
     '''
     from bioformats import load_image
     path = os.path.join(example_images_directory(), folder, file_name)
-    return load_image(path, **kwargs)
-
-@unittest.skip
-def read_test_image(file_name, **kwargs):
-    '''Read an image from the test directory
-    
-    file_name - name of the file within the test directory
-    
-    **kwargs - arguments passe into load_image
-    '''
-    from bioformats import load_image
-    path = os.path.join(testimages_directory, file_name)
+    maybe_download_example_image([folder], file_name)
     return load_image(path, **kwargs)
 
 raw_8_1 = 'AAQJDRIWGx8kKC0xNjo/Q0hMUVZaX2NobHF1en6Dh4wEBgoOEhcbICQpLTI2Oz9ESE1RVlpfY2hscXV6foOHjAkKDBAUGBwgJSkuMjc7QERJTVJWW19kaG1xdnp/g4iMDQ4QExYaHiImKi8zODxARUlOUldbYGRpbXJ2e3+EiI0SEhQWGR0gJCgsMDU5PUFGSk9TV1xgZWlucnd7gISJjRYXGBodICMmKi4yNjo/Q0dLUFRYXWFmam9zd3yAhYmOGxscHiAjJiktMDQ4PEBESU1RVVpeYmdrcHR4fYGGio8fICAiJCYpLDAzNzs+QkZKT1NXW19kaGxxdXl+goeLjyQkJSYoKi0wMzY6PUFFSUxRVVldYWVqbnJ2e3+DiIyRKCkpKiwuMDM2OTxAQ0dLT1NXW19jZ2tvdHh8gIWJjZItLS4vMDI0Nzo8QENGSk1RVVldYWVpbXF1eX6ChoqPkzEyMjM1Njg7PUBDRklNUFRXW19jZ2tvc3d7f4SIjJCUNjY3ODk6PD5BQ0ZJTFBTV1peYWVpbXF1eX2BhYmOkpY6Ozs8PT9AQkVHSk1QU1ZZXWBkaGxvc3d7f4OHi4+UmD8/QEBBQ0RGSUtNUFNWWVxgY2dqbnJ2eX2BhYmNkZWaQ0RERUZHSUpMT1FUV1lcYGNmam1xdHh8gISHi4+Tl5tISElJSktNT1FTVVdaXWBjZmltcHR3e36ChoqOkpaZnUxNTU5PUFFTVVdZW15gY2ZpbHBzdnp9gYWIjJCUmJygUVFSUlNUVVdZW11fYWRnam1wc3Z5fYCEh4uPkpaanqJWVlZXV1haW11fYWNlaGptcHN2eXyAg4eKjpGVmZ2gpFpaW1tcXV5fYWNlZ2lsbnF0dnl8gIOGio2RlJibn6OnX19fYGBhYmRlZ2lrbW9ydHd6fYCDhomNkJOXmp6ipaljY2RkZWZnaGprbW9xc3Z4e32Ag4aJjJCTlpqdoaSorGhoaGlpamtsbm9xc3V3eXx+gYSHio2Qk5aZnaCkp6uubGxtbW5vcHFydHV3eXt9gIKFh4qNkJOWmZygo6eqrrFxcXFycnN0dXZ4eXt9f4GEhoiLjpGTlpmcoKOmqq2wtHV1dnZ3d3h5e3x+f4GDhYeKjI+RlJeanaCjpqmtsLO3enp6e3t8fX5/gIKEhYeJi46QkpWYmp2go6aprLCztrp+fn9/gICBgoOFhoiJi42PkpSWmZueoaSnqq2ws7a5vYODg4SEhYaHiImKjI6PkZOWmJqdn6Kkp6qtsLO2ubzAh4eIiImJiouMjY+QkpSVl5mcnqCjpairrrCztrm8wMOMjIyNjY6Pj5GSk5SWmJqbnaCipKeprK6xtLe6vcDDxpCRkZGSkpOUlZaXmZqcnqCipKaoqq2vsrW3ur3Aw8bJlZWVlpaXl5iZmpydn6CipKaoqqyusbO2uLu+wcTGyc2Zmpqam5ucnZ6foKGjpKaoqqyusLK0t7m8v8HEx8rN0J6enp+foKChoqOkpqepqqyusLK0tri7vcDCxcjLzdDTo6Ojo6SkpaanqKmqq62usLK0tri6vL/Bw8bJy87R1Nenp6eoqKmpqqusra6wsbO0tri6vL7AwsXHyszP0tTX2qysrKytra6vr7Cxs7S1t7m6vL7AwsTGycvO0NPV2NvesLCwsbGysrO0tba3uLq7vb7AwsTGyMrNz9HU1tnc3uG1tbW1tra3t7i5uru9vr/Bw8TGyMrMztDT1dja3d/i5bm5ubq6u7u8vb6/wMHCxMXHycrMztDS1NfZ297g4+bovr6+vr+/wMDBwsPExcfIycvNztDS1NbY293f4uTn6ezCwsLDw8TExcbGx8nKy8zOz9HT1NbY2tzf4ePl6Ort8MfHx8fIyMnJysvMzc7P0dLU1dfZ2tze4OLl5+ns7vHzy8vMzMzNzc7Pz9DR0tTV1tjZ293f4OLk5unr7fDy9PfQ0NDQ0dHS0tPU1dbX2Nnb3N7f4ePl5ujq7e/x8/b4+9TU1dXV1tbX19jZ2tvc3t/g4uPl5+nr7O/x8/X3+vz/'
@@ -124,16 +318,4 @@ jpg_8_2 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UH
 png_8_2 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAwCAAAAABVxyezAAADMklEQVR4nGL8/+c3OkThAAAAAP//Yvrz7/9/BlSIAgAAAAD//2L5/f/fP0w1CAgAAAD//2L58//f33///v37////f2zqAAAAAP//YvnN8O/fX4gSqCJUFQAAAAD//2L58///v79QFf9hBiGpAwAAAP//YvnN8P/fv78oSpBV/QcAAAD//2L585/hH0TF37///v2DOBmhhAEAAAD//2L5zfAfasRfmFX//iEM+gcAAAD//2L585/hP8SIf3///fsHUwFXAgAAAP//YvnN8B9ixL8/cAOQlQAAAAD//4KY8P/fX6gzkJX8+/fv/38AAAAA//+CmPD/H0LFXxRD/gEAAAD//2L585/hP5IR/5Cc+u/f/3//AAAAAP//YvnNALMDyQi4kv//AAAAAP//gpgAM+Lf3z9wJRA1/wEAAAD//4KY8B+i/i8C/IMFLwAAAP//gpoAUQFzKMQ0iBYAAAAA//+CmoDFCKgSAAAAAP//YvnNAHUlshFIIQ8AAAD//2L5w4Bmx7+/UJdC3AoAAAD//4KagMUIqEMAAAAA//9CmPAfqgDNFgAAAAD//4KZgNUVf//+/QcAAAD//4KbgN2Iv38BAAAA//+CmwBX8A/qgT8QOwAAAAD//4KYAHElViMAAAAA//9CmPAfkgIgUYVQAAAAAP//gpsAM+IvmkMBAAAA//9CMgFixF80WwAAAAD//0KY8P8fsgqoNX/+AgAAAP//gpnA8A8S3P/RjQAAAAD//2L5858BNSSQ4uTv379/AQAAAP//gpqA5Epkv/77+wcAAAD//0I2AasRAAAAAP//QjIBixH//v4FAAAA//9i+c2AMAFZAcwIAAAAAP//YvmDMAHTiH9//wIAAAD//4KbwPD//z9YcMMU/Pv79y8AAAD//0IxAcmIvzCHAgAAAP//gpkAdSWmEQAAAAD//0I1ARbcSEYAAAAA//9CMQHZCFiIAwAAAP//QpjA8P8fshF/ocEFAAAA//9CNQHqyv9IRgAAAAD//2L5w/Af7s///6BhBU85//4CAAAA//9CMwHm0f9wOwAAAAD//4KbgHDl/3///v37/xfqVwAAAAD//wMAip9DsGSZAhgAAAAASUVORK5CYII='
 gif_8_2 = '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'
 
-def teardown_package():
-    '''Shut down the Ilastik threads if they are up'''
-    try:
-        from ilastik.core.jobMachine import GLOBAL_WM
-        GLOBAL_WM.stopWorkers()
-        
-    except:
-        pass
-    
-if __name__ == "__main__":
-    import nose
-    
-    nose.main()
+github_url = "https://github.com/CellProfiler/CellProfiler/raw/master"

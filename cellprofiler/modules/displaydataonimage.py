@@ -7,26 +7,15 @@ of every object in an image. The display itself is an image which you
 can save to a file using <b>SaveImages</b>.
 '''
 
-# CellProfiler is distributed under the GNU General Public License.
-# See the accompanying file LICENSE for details.
-# 
-# Copyright (c) 2003-2009 Massachusetts Institute of Technology
-# Copyright (c) 2009-2014 Broad Institute
-# 
-# Please see the AUTHORS file for credits.
-# 
-# Website: http://www.cellprofiler.org
-
-
 import numpy as np
 
-import cellprofiler.cpmodule as cpm
-import cellprofiler.settings as cps
 import cellprofiler.cpimage as cpi
-import cellprofiler.objects as cpo
-import cellprofiler.workspace as cpw
+import cellprofiler.cpmodule as cpm
 import cellprofiler.measurements as cpmeas
+import cellprofiler.objects as cpo
 import cellprofiler.preferences as cpprefs
+import cellprofiler.settings as cps
+import cellprofiler.workspace as cpw
 from cellprofiler.modules.identify import M_LOCATION_CENTER_X, M_LOCATION_CENTER_Y
 
 OI_OBJECTS = "Object"
@@ -39,16 +28,19 @@ E_IMAGE = "Image"
 CT_COLOR = "Color"
 CT_TEXT = "Text"
 
+CMS_USE_MEASUREMENT_RANGE = "Use this image's measurement range"
+CMS_MANUAL = "Manual"
+
 class DisplayDataOnImage(cpm.CPModule):
     module_name = 'DisplayDataOnImage'
     category = 'Data Tools'
-    variable_revision_number = 5
-    
+    variable_revision_number = 6
+
     def create_settings(self):
         """Create your settings by subclassing this function
-        
+
         create_settings is called at the end of initialization.
-        
+
         You should create the setting variables for your module here:
             # Ask the user for the input image
             self.image_name = cellprofiler.settings.ImageNameSubscriber(...)
@@ -64,16 +56,16 @@ class DisplayDataOnImage(cpm.CPModule):
             <li><i>%(OI_OBJECTS)s</i> displays measurements made on
             objects.</li>
             <li><i>%(OI_IMAGE)s</i> displays a single measurement made
-            on an image.</li> 
+            on an image.</li>
             </ul>"""%globals())
-        
+
         self.objects_name = cps.ObjectNameSubscriber(
             "Select the input objects", cps.NONE, doc = """
             <i>(Used only when displaying object measurements)</i><br>
             Choose the name of objects identified by some previous
             module (such as <b>IdentifyPrimaryObjects</b> or
             <b>IdentifySecondaryObjects</b>).""")
-        
+
         def object_fn():
             if self.objects_or_image == OI_OBJECTS:
                 return self.objects_name.value
@@ -85,7 +77,7 @@ class DisplayDataOnImage(cpm.CPModule):
             made by some previous module on either the whole image (if
             displaying a single image measurement) or on the objects you
             selected.""")
-        
+
         self.wants_image = cps.Binary(
             "Display background image?", True,
             doc="""Choose whether or not to display the measurements on
@@ -101,7 +93,7 @@ class DisplayDataOnImage(cpm.CPModule):
             This can be any image created or loaded by a previous module.
             If you have chosen not to display the background image, the image
             will only be used to determine the dimensions of the displayed image""")
-        
+
         self.color_or_text = cps.Choice(
             "Display mode", [CT_TEXT, CT_COLOR],
             doc = """<i>(Used only when displaying object measurements)</i><br>
@@ -114,30 +106,30 @@ class DisplayDataOnImage(cpm.CPModule):
             the other objects in the set using the default color map.
             """ % globals()
             )
-        
+
         self.colormap = cps.Colormap(
             "Color map",
             doc = """<i>(Used only when displaying object measurements)</i><br>
             This is the color map used as the color gradient for coloring the
             objects by their measurement values.
-            """)        
+            """)
         self.text_color = cps.Color(
             "Text color","red",doc="""
             This is the color that will be used when displaying the text.
             """)
-        
+
         self.display_image = cps.ImageNameProvider(
             "Name the output image that has the measurements displayed","DisplayImage",doc="""
             The name that will be given to the image with
             the measurements superimposed. You can use this name to refer to the image in
             subsequent modules (such as <b>SaveImages</b>).""")
-        
+
         self.font_size = cps.Integer(
             "Font size (points)", 10, minval=1)
-        
+
         self.decimals = cps.Integer(
             "Number of decimals", 2, minval=0)
-        
+
         self.saved_image_contents = cps.Choice(
             "Image elements to save",
             [E_IMAGE, E_FIGURE, E_AXES],doc="""
@@ -146,17 +138,47 @@ class DisplayDataOnImage(cpm.CPModule):
             <li><i>%(E_IMAGE)s:</i> Saves the image with the overlaid measurement annotations.</li>
             <li><i>%(E_AXES)s:</i> Adds axes with tick marks and image coordinates.</li>
             <li><i>%(E_FIGURE)s:</i> Adds a title and other decorations.</li></ul>"""%globals())
-        
+
         self.offset = cps.Integer(
             "Annotation offset (in pixels)",0,doc="""
             Add a pixel offset to the measurement. Normally, the text is
             placed at the object (or image) center, which can obscure relevant features of
             the object. This setting adds a specified offset to the text, in a random
             direction.""")
-        
+
+        self.color_map_scale_choice = cps.Choice(
+            "Color map scale",
+            [CMS_USE_MEASUREMENT_RANGE, CMS_MANUAL],
+            doc = """<i>(Used only when displaying object measurements as a
+            colormap)</i><br>
+            <b>DisplayDataOnImage</b> assigns a color to each object's
+            measurement value from a colormap when in colormap-mode, mapping
+            the value to a color along the colormap's continuum. This mapping
+            has implicit upper and lower bounds to its range which are the
+            extremes of the colormap. This setting determines whether the
+            extremes are the minimum and maximum values of the measurement
+            from among the objects in the current image or manually-entered
+            extremes.
+            <ul>
+            <li><i>%(CMS_USE_MEASUREMENT_RANGE)s:</i> Use
+            the full range of colors to get the maximum contrast within the
+            image. </li>
+            <li><i>%(CMS_MANUAL)s:</i> Manually set the upper and
+            lower bounds so that images with different maxima and minima
+            can be compared by a uniform color mapping.</li>
+            </ul>
+            """ % globals())
+        self.color_map_scale = cps.FloatRange(
+            "Color map range",
+            value = (0.0, 1.0),
+            doc = """<i>(Used only when setting a manual colormap range)</i><br>
+            This setting determines the lower and upper bounds of the values
+            for the color map.
+            """)
+
     def settings(self):
         """Return the settings to be loaded or saved to/from the pipeline
-        
+
         These are the settings (from cellprofiler.settings) that are
         either read from the strings in the pipeline or written out
         to the pipeline. The settings should appear in a consistent
@@ -165,9 +187,10 @@ class DisplayDataOnImage(cpm.CPModule):
         return [self.objects_or_image, self.objects_name, self.measurement,
                 self.image_name, self.text_color, self.display_image,
                 self.font_size, self.decimals, self.saved_image_contents,
-                self.offset, self.color_or_text, self.colormap, 
-                self.wants_image]
-    
+                self.offset, self.color_or_text, self.colormap,
+                self.wants_image, self.color_map_scale_choice,
+                self.color_map_scale]
+
     def visible_settings(self):
         """The settings that are visible in the UI
         """
@@ -175,21 +198,23 @@ class DisplayDataOnImage(cpm.CPModule):
         if self.objects_or_image == OI_OBJECTS:
             result += [self.objects_name]
         result += [self.measurement, self.wants_image, self.image_name]
-        if self.objects_or_image == OI_OBJECTS:
+        if self.objects_or_image == OI_OBJECTS and not self.use_as_data_tool:
             result += [self.color_or_text]
         if self.use_color_map():
-            result += [self.colormap]
+            result += [self.colormap, self.color_map_scale_choice]
+            if self.color_map_scale_choice == CMS_MANUAL:
+                result += [self.color_map_scale]
         else:
             result += [ self.text_color, self.font_size, self.decimals,
                         self.offset]
         result += [self.display_image, self.saved_image_contents]
         return result
-        
+
     def use_color_map(self):
         '''True if the measurement values are rendered using a color map'''
         return self.objects_or_image == OI_OBJECTS and \
-               self.color_or_text == CT_COLOR
-    
+               self.color_or_text == CT_COLOR and not self.use_as_data_tool
+
     def run(self, workspace):
         import matplotlib
         import matplotlib.cm
@@ -204,8 +229,12 @@ class DisplayDataOnImage(cpm.CPModule):
             pixel_data = image.pixel_data
         else:
             pixel_data = np.zeros(image.pixel_data.shape[:2])
+        object_set = workspace.object_set
         if self.objects_or_image == OI_OBJECTS:
-            objects = workspace.object_set.get_objects(self.objects_name.value)
+            if self.objects_name.value in object_set.get_object_names():
+                objects = object_set.get_objects(self.objects_name.value)
+            else:
+                objects = None
         workspace.display_data.pixel_data = pixel_data
         if self.use_color_map():
             workspace.display_data.labels = objects.segmented
@@ -227,7 +256,7 @@ class DisplayDataOnImage(cpm.CPModule):
             values = measurements.get_current_measurement(
                 self.objects_name.value,
                 self.measurement.value)
-            if len(values) < objects.count:
+            if objects is not None and len(values) < objects.count:
                 temp = np.zeros(objects.count, values.dtype)
                 temp[:len(values)] = values
                 temp[len(values):] = np.nan
@@ -277,11 +306,11 @@ class DisplayDataOnImage(cpm.CPModule):
         else:
             if not self.use_color_map():
                 fig.subplots_adjust(.1,.1,.9,.9,0,0)
-            
+
         pixel_data = figure_to_image(fig, dpi=fig.dpi)
         image = cpi.Image(pixel_data)
         workspace.image_set.add(self.display_image.value, image)
-        
+
     def run_as_data_tool(self, workspace):
         # Note: workspace.measurements.image_set_number contains the image
         #    number that should be displayed.
@@ -289,7 +318,7 @@ class DisplayDataOnImage(cpm.CPModule):
         import loadimages as LI
         import os.path
         im_id = self.image_name.value
-        
+
         m = workspace.measurements
         image_name = self.image_name.value
         pathname_feature = "_".join((LI.C_PATH_NAME, image_name))
@@ -297,7 +326,7 @@ class DisplayDataOnImage(cpm.CPModule):
         if not all([m.has_feature(cpmeas.IMAGE, f)
                     for f in pathname_feature, filename_feature]):
             with wx.FileDialog(
-                None, 
+                None,
                 message = "Image file for display",
                 wildcard = "Image files (*.tif, *.png, *.jpg)|*.tif;*.png;*.jpg|"
                 "All files (*.*)|*.*") as dlg:
@@ -307,19 +336,20 @@ class DisplayDataOnImage(cpm.CPModule):
         else:
             pathname = m.get_current_image_measurement(pathname_feature)
             filename = m.get_current_image_measurement(filename_feature)
-        
+
         # Add the image to the workspace ImageSetList
         image_set_list = workspace.image_set_list
         image_set = image_set_list.get_image_set(0)
         ip = LI.LoadImagesImageProvider(im_id, pathname, filename)
         image_set.providers.append(ip)
-        
+
         self.run(workspace)
-        
+
     def display(self, workspace, figure):
         figure.set_subplots((1, 1))
         ax = figure.subplot(0, 0)
-        title = "%s_%s" % (self.objects_name.value, self.measurement.value)
+        title = "%s_%s" % (self.objects_name.value if self.objects_or_image == OI_OBJECTS else cpmeas.IMAGE,
+                           self.measurement.value)
         def imshow_fn(pixel_data):
             if pixel_data.ndim == 3:
                 figure.subplot_imshow_color(0, 0, pixel_data, title=title)
@@ -327,14 +357,17 @@ class DisplayDataOnImage(cpm.CPModule):
                 figure.subplot_imshow_grayscale(0, 0, pixel_data, title=title)
 
         self.display_on_figure(workspace, ax, imshow_fn)
-        
+
     def display_on_figure(self, workspace, axes, imshow_fn):
         import matplotlib
         import matplotlib.cm
-        
+
         if self.use_color_map():
             labels = workspace.display_data.labels
-            pixel_data = workspace.display_data.pixel_data
+            if self.wants_image:
+                pixel_data = workspace.display_data.pixel_data
+            else:
+                pixel_data = (labels != 0).astype(np.float32)
             if pixel_data.ndim == 3:
                 pixel_data = np.sum(pixel_data, 2) / pixel_data.shape[2]
             colormap_name = self.colormap.value
@@ -346,6 +379,9 @@ class DisplayDataOnImage(cpm.CPModule):
             colors = np.ones((len(vmask) + 1, 4))
             colors[1:][~vmask, :3] = 1
             sm = matplotlib.cm.ScalarMappable(cmap = colormap)
+            if self.color_map_scale_choice == CMS_MANUAL:
+                sm.set_clim(self.color_map_scale.min,
+                            self.color_map_scale.max)
             sm.set_array(values)
             colors[1:][vmask, :] = sm.to_rgba(values)
             img = colors[labels, :3] * pixel_data[:, :, np.newaxis]
@@ -364,15 +400,15 @@ class DisplayDataOnImage(cpm.CPModule):
                     svalue = "%.*f"%(self.decimals.value, value)
                 except:
                     svalue = str(value)
-                
+
                 text = matplotlib.text.Text(x=x, y=y, text=svalue,
                                             size=self.font_size.value,
                                             color=self.text_color.value,
                                             verticalalignment='center',
                                             horizontalalignment='center')
                 axes.add_artist(text)
-            
-    def upgrade_settings(self, setting_values, variable_revision_number, 
+
+    def upgrade_settings(self, setting_values, variable_revision_number,
                          module_name, from_matlab):
         if from_matlab and (variable_revision_number == 2):
             object_name, category, feature_nbr, image_name, size_scale, \
@@ -399,22 +435,24 @@ class DisplayDataOnImage(cpm.CPModule):
             '''Added annotation offset'''
             setting_values = setting_values + ["0"]
             variable_revision_number = 3
-            
+
         if variable_revision_number == 3:
             # Added color map mode
-            setting_values = setting_values + [ 
+            setting_values = setting_values + [
                 CT_TEXT, cpprefs.get_default_colormap() ]
             variable_revision_number = 4
-            
+
         if variable_revision_number == 4:
             # added wants_image
             setting_values = setting_values + [ cps.YES ]
             variable_revision_number = 5
-        
+        if variable_revision_number == 5:
+            # added color_map_scale_choice and color_map_scale
+            setting_values = setting_values + [
+                CMS_USE_MEASUREMENT_RANGE, "0.0,1.0"]
+            variable_revision_number = 6
         return setting_values, variable_revision_number, from_matlab
-        
 
-    
 if __name__ == "__main__":
     ''' For debugging purposes only...
     '''
@@ -429,5 +467,5 @@ if __name__ == "__main__":
     if dlg.ShowModal() == wx.ID_OK:
         data_tool_frame = DataToolFrame(None, module_name=tool_name, measurements_file_name = dlg.Path)
     data_tool_frame.Show()
-    
+
     app.MainLoop()

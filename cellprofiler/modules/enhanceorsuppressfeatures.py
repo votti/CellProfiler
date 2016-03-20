@@ -1,34 +1,23 @@
 '''<b>Enhance Or Suppress Features</b> enhances or suppresses certain image features 
-(such as speckles, ring shapes, and neurites), which can improve subsequent 
+(such as speckles, ring shapes, and neurites), which can improve subsequent
 identification of objects.
 <hr>
 This module enhances or suppresses the intensity of certain pixels relative
-to the rest of the image, by applying image processing filters to the image. It 
+to the rest of the image, by applying image processing filters to the image. It
 produces a grayscale image in which objects can be identified using an <b>Identify</b> module.
 '''
 
-# CellProfiler is distributed under the GNU General Public License.
-# See the accompanying file LICENSE for details.
-# 
-# Copyright (c) 2003-2009 Massachusetts Institute of Technology
-# Copyright (c) 2009-2014 Broad Institute
-# 
-# Please see the AUTHORS file for credits.
-# 
-# Website: http://www.cellprofiler.org
-
-
 import numpy as np
+from centrosome.cpmorphology import opening, closing, white_tophat
+from centrosome.filter import enhance_dark_holes, circular_hough
+from centrosome.filter import hessian, median_filter
+from centrosome.filter import variance_transform, line_integration
 from scipy.ndimage import gaussian_filter
 
-import cellprofiler.cpmodule as cpm
 import cellprofiler.cpimage as cpi
+import cellprofiler.cpmodule as cpm
 import cellprofiler.settings as cps
-from cellprofiler.cpmath.cpmorphology import opening, closing, white_tophat
-from cellprofiler.cpmath.filter import enhance_dark_holes, circular_hough
-from cellprofiler.cpmath.filter import variance_transform, line_integration
-from cellprofiler.cpmath.filter import hessian
-from cellprofiler.gui.help import HELP_ON_PIXEL_INTENSITIES, PROTIP_AVOID_ICON
+from cellprofiler.gui.help import HELP_ON_MEASURING_DISTANCES, PROTIP_AVOID_ICON
 
 ENHANCE = 'Enhance'
 SUPPRESS = 'Suppress'
@@ -40,6 +29,9 @@ E_CIRCLES = 'Circles'
 E_TEXTURE = 'Texture'
 E_DIC = 'DIC'
 
+S_FAST = "Fast / hexagonal"
+S_SLOW = "Slow / circular"
+
 N_GRADIENT = "Line structures"
 N_TUBENESS = "Tubeness"
 
@@ -47,30 +39,30 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
 
     module_name = 'EnhanceOrSuppressFeatures'
     category = "Image Processing"
-    variable_revision_number = 4
-    
+    variable_revision_number = 5
+
     def create_settings(self):
         self.image_name = cps.ImageNameSubscriber(
             'Select the input image',
             cps.NONE,doc="""
             Select the image with features to be enhanced or suppressed.""")
-        
+
         self.filtered_image_name = cps.ImageNameProvider(
             'Name the output image',
             'FilteredBlue',doc="""
             Enter a name for the feature-enhanced or suppressed image.""")
-        
+
         self.method = cps.Choice(
             'Select the operation',
             [ ENHANCE, SUPPRESS], doc="""
             Select whether you want to enhance or suppress the features you designated.
             <ul>
-            <li><i>%(ENHANCE)s:</i> Produce an image whose intensity is largely 
+            <li><i>%(ENHANCE)s:</i> Produce an image whose intensity is largely
             composed of the features of interest.</li>
             <li <i>%(SUPPRESS)s:</i> Produce an image with the features largely
             removed.</li>
             </ul>"""%globals())
-        
+
         self.enhance_method = cps.Choice(
             'Feature type',
             [E_SPECKLES, E_NEURITES, E_DARK_HOLES, E_CIRCLES, E_TEXTURE, E_DIC],doc="""
@@ -84,14 +76,14 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             first suppresses the speckles by applying a grayscale erosion to reduce everything
             within a given radius to the lowest value within that radius, then uses
             a grayscale dilation to restore objects larger than the radius to an
-            approximation of their former shape. The white tophat filter enhances 
+            approximation of their former shape. The white tophat filter enhances
             speckles by subtracting the effects of opening from the original image.
             </li>
             <li><i>%(E_NEURITES)s:</i> Neurites are taken to be long, thin features
             of enhanced intensity. Choose this option to enhance the intensity
             of the neurites using the %(N_GRADIENT)s or %(N_TUBENESS)s methods
             described below.</li>
-            <li><i>%(E_DARK_HOLES)s:</i> The module uses morphological reconstruction 
+            <li><i>%(E_DARK_HOLES)s:</i> The module uses morphological reconstruction
             (the rolling-ball algorithm) to identify dark holes within brighter
             areas, or brighter ring shapes. The image is inverted so that the dark holes turn into
             bright peaks. The image is successively eroded and the eroded image
@@ -121,19 +113,19 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             </ul>
             In addition, this module enables you to suppress certain features (such as speckles)
             by specifying the feature size.""" % globals())
-        
+
         self.object_size = cps.Integer(
             'Feature size', 10,2,doc="""
             <i>(Used only if circles, speckles or neurites are selected, or if suppressing features)</i><br>
             Enter the diameter of the largest speckle, the width of the circle
             or the width of the neurites to be enhanced or suppressed, which
-            will be used to calculate an adequate filter size. %(HELP_ON_PIXEL_INTENSITIES)s"""%globals())
+            will be used to calculate an adequate filter size. %(HELP_ON_MEASURING_DISTANCES)s"""%globals())
 
         self.hole_size = cps.IntegerRange(
             'Range of hole sizes', value=(1,10),minval=1, doc="""
             <i>(Used only if %(E_DARK_HOLES)s is selected)</i><br>
             The range of hole sizes to be enhanced. The algorithm will
-            identify only holes whose diameters fall between these two 
+            identify only holes whose diameters fall between these two
             values."""%globals())
 
         self.smoothing = cps.Float(
@@ -160,7 +152,7 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             <img src="memory:%(PROTIP_AVOID_ICON)s">&nbsp;
             Smoothing can be turned off by entering a value of zero, but this
             is not recommended.""" % globals())
-        
+
         self.angle = cps.Float(
             'Shear angle', value = 0,doc = """
             <i>(Used only for the %(E_DIC)s method)</i><br>
@@ -172,9 +164,9 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             the shear angle is 45&deg;. If the shadows appear on top,
             the shear angle is 180&deg; + 45&deg; = 225&deg;.
             """%globals())
-        
+
         self.decay = cps.Float(
-            'Decay', value = 0.95, minval = 0.1, maxval = 1,doc = 
+            'Decay', value = 0.95, minval = 0.1, maxval = 1,doc =
             """<i>(Used only for the %(E_DIC)s method)</i><br>
             The decay setting applies an exponential decay during the process
             of integration by multiplying the accumulated sum by the decay
@@ -185,9 +177,9 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             of your objects if the intensities decrease toward the middle.
             Set the decay to a small value if there appears to be a bias
             in the integration direction."""%globals())
-        
+
         self.neurite_choice = cps.Choice(
-            "Enhancement method", 
+            "Enhancement method",
             [N_TUBENESS, N_GRADIENT],doc = """
             <i>(Used only for the %(E_NEURITES)s method)</i><br>
             Two methods can be used to enhance neurites:<br>
@@ -205,17 +197,33 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             if that eigenvalue is negative (white neurite on dark background),
             otherwise, zero.</li>
             <li><i>%(N_GRADIENT)s</i>: The module takes the difference of the
-            white and black tophat filters (a white tophat filtering is the image minus 
-            the morphological grayscale opening of the image; a black tophat filtering is the 
-            morphological grayscale closing of the image minus the image). 
+            white and black tophat filters (a white tophat filtering is the image minus
+            the morphological grayscale opening of the image; a black tophat filtering is the
+            morphological grayscale closing of the image minus the image).
             The effect is to enhance lines whose width is the "feature size".</li>
             </ul>"""%globals())
-        
+
+        self.speckle_accuracy = cps.Choice(
+            "Speed and accuracy",
+            choices = [S_FAST, S_SLOW],
+            doc = """
+            <i>(Used only for the %(E_SPECKLES)s method)</i><br>
+            <i>%(E_SPECKLES)s</i> can use a fast or slow algorithm to find
+            speckles.
+            <ul>
+            <li><i>%(S_FAST)s:</i> Select this option for speckles that have a large
+            radius (greater than 10 pixels) and need not be exactly circular.</li>
+            <li><i>%(S_SLOW)s:</i> Use for speckles of small radius or to
+            maintain backwards compatibility with previous versions of
+            CellProfiler.</li>
+            </ul>
+            """ % globals())
+
     def settings(self):
         return [ self.image_name, self.filtered_image_name,
                 self.method, self.object_size, self.enhance_method,
                 self.hole_size, self.smoothing, self.angle, self.decay,
-                self.neurite_choice]
+                self.neurite_choice, self.speckle_accuracy]
 
 
     def visible_settings(self):
@@ -235,12 +243,14 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
                     result += [self.object_size]
                 else:
                     result += [self.smoothing]
+            elif self.enhance_method == E_SPECKLES:
+                result += [self.object_size, self.speckle_accuracy]
             else:
                 result += [self.object_size]
         else:
             result += [self.object_size]
         return result
-            
+
     def run(self, workspace):
         image = workspace.image_set.get_image(self.image_name.value,
                                               must_be_grayscale = True)
@@ -252,7 +262,18 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
         pixel_data = image.pixel_data
         if self.method == ENHANCE:
             if self.enhance_method == E_SPECKLES:
-                result = white_tophat(pixel_data, radius, mask)
+                if self.speckle_accuracy == S_SLOW or radius <= 3:
+                    result = white_tophat(pixel_data, radius, mask)
+                else:
+                    #
+                    # white_tophat = img - opening
+                    #              = img - dilate(erode)
+                    #              = img - median_filter(median_filter(0%) 100%)
+                    result = pixel_data - median_filter(
+                        median_filter(pixel_data, mask, radius, percent = 0),
+                        mask, radius, percent = 100)
+                    if mask is not None:
+                        result[~mask] = pixel_data[~mask]
             elif self.enhance_method == E_NEURITES:
                 if self.neurite_choice == N_GRADIENT:
                     #
@@ -261,7 +282,7 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
                     # desired effect = img + white_tophat - black_tophat
                     #                = img + img - opening - closing + img
                     #                = 3*img - opening - closing
-                    result = (3 * pixel_data - 
+                    result = (3 * pixel_data -
                               opening(pixel_data, radius, mask) -
                               closing(pixel_data, radius, mask))
                     result[result > 1] = 1
@@ -294,7 +315,7 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
                                             self.smoothing.value,
                                             mask = mask)
             elif self.enhance_method == E_DIC:
-                result = line_integration(pixel_data, 
+                result = line_integration(pixel_data,
                                           self.angle.value,
                                           self.decay.value,
                                           self.smoothing.value)
@@ -310,7 +331,7 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
             raise ValueError("Unknown filtering method: %s"%self.method)
         result_image = cpi.Image(result, parent_image=image)
         workspace.image_set.add(self.filtered_image_name.value, result_image)
-        
+
         if self.show_window:
             workspace.display_data.image = image.pixel_data
             workspace.display_data.result = result
@@ -324,11 +345,11 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
         figure.subplot_imshow_grayscale(1, 0, result,
                                         "Filtered: %s" % self.filtered_image_name.value,
                                         sharexy = figure.subplot(0, 0))
-        
+
     def upgrade_settings(self, setting_values, variable_revision_number,
                              module_name, from_matlab):
         '''Adjust setting values if they came from a previous revision
-        
+
         setting_values - a sequence of strings representing the settings
                          for the module as stored in the pipeline
         variable_revision_number - the variable revision number of the
@@ -340,7 +361,7 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
                       that module was merged into the current module
         from_matlab - True if the settings came from a Matlab pipeline, False
                       if the settings are from a CellProfiler 2.0 pipeline.
-        
+
         Overriding modules should return a tuple of setting_values,
         variable_revision_number and True if upgraded to CP 2.0, otherwise
         they should leave things as-is so that the caller can report
@@ -361,6 +382,9 @@ class EnhanceOrSuppressFeatures(cpm.CPModule):
         if not from_matlab and variable_revision_number == 3:
             setting_values = setting_values + [N_GRADIENT]
             variable_revision_number = 4
+        if not from_matlab and variable_revision_number == 4:
+            setting_values = setting_values + [S_SLOW]
+            variable_revision_number = 5
         return setting_values, variable_revision_number, from_matlab
 
 EnhanceOrSuppressSpeckles = EnhanceOrSuppressFeatures

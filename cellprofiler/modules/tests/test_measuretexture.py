@@ -1,42 +1,37 @@
 '''test_measuretexture - test the MeasureTexture module
-
-CellProfiler is distributed under the GNU General Public License.
-See the accompanying file LICENSE for details.
-
-Copyright (c) 2003-2009 Massachusetts Institute of Technology
-Copyright (c) 2009-2014 Broad Institute
-All rights reserved.
-
-Please see the AUTHORS file for credits.
-
-Website: http://www.cellprofiler.org
 '''
 
 import base64
-from matplotlib.image import pil_to_array
-import numpy as np
 import os
-import PIL.Image as PILImage
-from scipy.io.matlab import loadmat
-import scipy.ndimage as scind
-from StringIO import StringIO
+import shutil
+import tempfile
 import unittest
+import urllib2
 import zlib
+from StringIO import StringIO
 
-import cellprofiler.pipeline as cpp
-import cellprofiler.cpmodule as cpm
+import numpy as np
+import scipy.ndimage as scind
+from bioformats import load_image
+from bioformats.formatreader import load_using_bioformats_url
+from scipy.io.matlab import loadmat
+
 import cellprofiler.cpimage as cpi
+import cellprofiler.cpmodule as cpm
 import cellprofiler.measurements as cpmeas
-import cellprofiler.objects as cpo
-import cellprofiler.workspace as cpw
 import cellprofiler.modules.measuretexture as M
-from cellprofiler.modules.tests import example_images_directory
+import cellprofiler.objects as cpo
+import cellprofiler.pipeline as cpp
 import cellprofiler.preferences as cpprefs
+import cellprofiler.workspace as cpw
+from cellprofiler.modules.tests import \
+     example_images_directory, maybe_download_example_image, \
+     maybe_download_sbs, github_url
 
 INPUT_IMAGE_NAME = 'Cytoplasm'
 INPUT_OBJECTS_NAME = 'inputobjects'
 class TestMeasureTexture(unittest.TestCase):
-        
+
     def make_workspace(self, image, labels, convert = True, mask = None):
         '''Make a workspace for testing MeasureTexture'''
         module = M.MeasureTexture()
@@ -58,7 +53,7 @@ class TestMeasureTexture(unittest.TestCase):
         objects.segmented = labels
         object_set.add_objects(objects, INPUT_OBJECTS_NAME)
         return workspace, module
-    
+
     def test_01_01_load_matlab(self):
         data = ('eJzzdQzxcXRSMNUzUPB1DNFNy8xJ1VEIyEksScsvyrVSCHAO9/TTUX'
                 'AuSk0sSU1RyM+zUggpTVXwKs1TMLBUMDS0MjSxMjFTMDIA8kgGDIye'
@@ -93,16 +88,16 @@ class TestMeasureTexture(unittest.TestCase):
         self.assertTrue(isinstance(module,M.MeasureTexture))
         self.assertEqual(module.image_count.value, 1)
         self.assertEqual(module.image_groups[0].image_name.value, "OrigBlue")
-        
+
         self.assertEqual(module.object_count.value, 1)
         self.assertEqual(module.object_groups[0].object_name.value, "Nuclei")
-        
+
         self.assertEqual(module.scale_count.value, 3)
-        for scale, expected in zip([x.scale.value 
+        for scale, expected in zip([x.scale.value
                                     for x in module.scale_groups],[3,4,5]):
             self.assertEqual(scale, expected)
         self.assertEqual(module.gabor_angles, 4)
-    
+
     def test_01_02_load_v1(self):
         data = ('eJztWk1P2zAYdj9AdEiMcdkkLj5uE0RpB9LgspZ1bJ3oh0bFtNvS1C2eErt'
                 'KHNbutJ+1437OjvsJi9uEJl4gaQptihJhhdfx4+fx69dOeHG90j6rnMBDSY'
@@ -138,17 +133,17 @@ class TestMeasureTexture(unittest.TestCase):
         self.assertTrue(isinstance(module,M.MeasureTexture))
         self.assertEqual(module.image_count.value, 1)
         self.assertEqual(module.image_groups[0].image_name.value, "OrigBlue")
-        
+
         self.assertEqual(module.object_count.value, 1)
         self.assertEqual(module.object_groups[0].object_name.value, "Nuclei")
-        
+
         self.assertEqual(module.scale_count.value, 3)
-        for scale, expected in zip([x.scale.value 
+        for scale, expected in zip([x.scale.value
                                     for x in module.scale_groups],[3,4,5]):
             self.assertEqual(scale, expected)
         self.assertEqual(module.gabor_angles.value, 3)
         self.assertTrue(module.wants_gabor)
-        
+
     def test_01_03_load_v2(self):
         data = """CellProfiler Pipeline: http://www.cellprofiler.org
 Version:1
@@ -204,7 +199,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:2|show_w
             self.assertEqual(module.scale_groups[1].angles.get_selections()[0], M.H_HORIZONTAL)
             self.assertEqual(module.wants_gabor, wants_gabor)
             self.assertEqual(module.gabor_angles, 6)
-        
+
     def test_01_03_load_v3(self):
         data = """CellProfiler Pipeline: http://www.cellprofiler.org
 Version:1
@@ -261,86 +256,106 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
             self.assertEqual(len(angles),2)
             self.assertTrue(M.H_HORIZONTAL in angles)
             self.assertTrue(M.H_VERTICAL in angles)
-            
+
             angles = module.scale_groups[1].angles.get_selections()
             self.assertEqual(len(angles),2)
             self.assertTrue(M.H_DIAGONAL in angles)
             self.assertTrue(M.H_ANTIDIAGONAL in angles)
-            
+
             self.assertEqual(module.scale_groups[1].scale, 5)
             self.assertEqual(module.wants_gabor, wants_gabor)
             self.assertEqual(module.gabor_angles, 6)
-        
-    def test_02_01_compare_to_matlab(self):
-        path = os.path.split(__file__)[0]
-        mask_file = os.path.join(path, 'Channel2-01-A-01Mask.png')
-        pimg = PILImage.open(mask_file)
-        mask = np.fromstring(pimg.tostring("raw", pimg.mode, 0, -1), np.uint8)
-        mask.shape = pimg.size
-        mask = np.flipud(mask)
-        texture_measurements = loadmat(os.path.join(path,'texturemeasurements.mat'), struct_as_record=True)
-        texture_measurements = texture_measurements['m'][0,0]
-        image_file = os.path.join(example_images_directory(), 
-                                  'ExampleSBSImages', 'Channel1-01-A-01.tif')
-        pimg = PILImage.open(image_file)
-        image = np.fromstring(pimg.tostring("raw", pimg.mode, 0, -1), np.uint8)
-        image.shape = pimg.size
-        image = np.flipud(image)
-        image = image.astype(float) / 255.0
-        labels,count = scind.label(mask.astype(bool),np.ones((3,3),bool))
-        centers = scind.center_of_mass(np.ones(labels.shape), labels, 
-                                       np.arange(count)+1)
-        centers = np.array(centers)
-        X = 1 # the index of the X coordinate
-        Y = 0 # the index of the Y coordinate
-        order_python = np.lexsort((centers[:,X],centers[:,Y]))
-        workspace, module = self.make_workspace(image, labels, convert = False)
-        module.scale_groups[0].scale.value = 3
-        my_angle = M.H_HORIZONTAL
-        module.scale_groups[0].angles.value = my_angle
+            self.assertEqual(module.images_or_objects, M.IO_BOTH)
 
-        module.run(workspace)
-        m = workspace.measurements
-        tm_center_x = texture_measurements['Location_Center_X'][0,0][:,0]
-        tm_center_y = texture_measurements['Location_Center_Y'][0,0][:,0]
-        order_matlab = np.lexsort((tm_center_x,tm_center_y))
-            
-        for measurement in M.F_HARALICK:
-            mname = '%s_%s_%s_%d'%(M.TEXTURE, measurement, INPUT_IMAGE_NAME, 3)
-            pymname = mname + "_" + M.H_TO_A[my_angle]
-            pytm = m.get_current_measurement(INPUT_OBJECTS_NAME, pymname)
-            tm = texture_measurements[mname][0,0][:,]
-            error_count = 0
-            for i in range(count):
-                matlab_val = tm[order_matlab[i]]
-                python_val = pytm[order_python[i]]
-                self.assertAlmostEqual(tm[order_matlab[i]],
-                                       pytm[order_python[i]],7,
-                                       "Measurement = %s, Loc=(%.2f,%.2f), Matlab=%f, Python=%f"%
-                                       (mname, tm_center_x[order_matlab[i]],
-                                        tm_center_y[order_matlab[i]],
-                                        tm[order_matlab[i]],
-                                        pytm[order_python[i]]))
-        image_measurements =\
-        (('Texture_AngularSecondMoment_Cytoplasm_3', 0.5412),
-         ('Texture_Contrast_Cytoplasm_3',0.1505),
-         ('Texture_Correlation_Cytoplasm_3', 0.7740),
-         ('Texture_Variance_Cytoplasm_3', 0.3330),
-         ('Texture_InverseDifferenceMoment_Cytoplasm_3',0.9321),
-         ('Texture_SumAverage_Cytoplasm_3',2.5684),
-         ('Texture_SumVariance_Cytoplasm_3',1.1814),
-         ('Texture_SumEntropy_Cytoplasm_3',0.9540),
-         ('Texture_Entropy_Cytoplasm_3',1.0677),
-         ('Texture_DifferenceVariance_Cytoplasm_3',0.1314),
-         ('Texture_DifferenceEntropy_Cytoplasm_3',0.4147),
-         ('Texture_InfoMeas1_Cytoplasm_3',-0.4236),
-         ('Texture_InfoMeas2_Cytoplasm_3',0.6609))
-        for feature_name, value in image_measurements:
-            py_feature_name = feature_name + "_" + M.H_TO_A[my_angle]
-            pytm = m.get_current_image_measurement(py_feature_name)
-            self.assertAlmostEqual(pytm, value,3,
-                                   "%s failed. Python=%f, Matlab=%f" %
-                                   (feature_name, pytm, value))
+    def test_01_04_load_v4(self):
+        data = """CellProfiler Pipeline: http://www.cellprofiler.org
+Version:3
+DateRevision:20141017202435
+GitHash:b261e94
+ModuleCount:3
+HasImagePlaneDetails:False
+
+MeasureTexture:[module_num:1|svn_version:\'Unknown\'|variable_revision_number:4|show_window:True|notes:\x5B\x5D|batch_state:array(\x5B\x5D, dtype=uint8)|enabled:True|wants_pause:False]
+    Hidden:2
+    Hidden:2
+    Hidden:2
+    Select an image to measure:rawDNA
+    Select an image to measure:rawGFP
+    Select objects to measure:Cells
+    Select objects to measure:Nuclei
+    Texture scale to measure:3
+    Angles to measure:Horizontal,Vertical
+    Texture scale to measure:5
+    Angles to measure:Diagonal,Anti-diagonal
+    Measure Gabor features?:Yes
+    Number of angles to compute for Gabor:6
+    Measure images or objects?:Images
+
+MeasureTexture:[module_num:2|svn_version:\'Unknown\'|variable_revision_number:4|show_window:True|notes:\x5B\x5D|batch_state:array(\x5B\x5D, dtype=uint8)|enabled:True|wants_pause:False]
+    Hidden:2
+    Hidden:2
+    Hidden:2
+    Select an image to measure:rawDNA
+    Select an image to measure:rawGFP
+    Select objects to measure:Cells
+    Select objects to measure:Nuclei
+    Texture scale to measure:3
+    Angles to measure:Horizontal,Vertical
+    Texture scale to measure:5
+    Angles to measure:Diagonal,Anti-diagonal
+    Measure Gabor features?:No
+    Number of angles to compute for Gabor:6
+    Measure images or objects?:Objects
+
+MeasureTexture:[module_num:3|svn_version:\'Unknown\'|variable_revision_number:4|show_window:True|notes:\x5B\x5D|batch_state:array(\x5B\x5D, dtype=uint8)|enabled:True|wants_pause:False]
+    Hidden:2
+    Hidden:2
+    Hidden:2
+    Select an image to measure:rawDNA
+    Select an image to measure:rawGFP
+    Select objects to measure:Cells
+    Select objects to measure:Nuclei
+    Texture scale to measure:3
+    Angles to measure:Horizontal,Vertical
+    Texture scale to measure:5
+    Angles to measure:Diagonal,Anti-diagonal
+    Measure Gabor features?:No
+    Number of angles to compute for Gabor:6
+    Measure images or objects?:Both
+"""
+        pipeline = cpp.Pipeline()
+        def callback(caller, event):
+            self.assertFalse(isinstance(event, cpp.LoadExceptionEvent))
+        pipeline.add_listener(callback)
+        pipeline.load(StringIO(data))
+        self.assertEqual(len(pipeline.modules()),3)
+        for i, (wants_gabor, io_choice) in enumerate(
+            ((True, M.IO_IMAGES),
+             (False, M.IO_OBJECTS),
+             (False, M.IO_BOTH))):
+            module = pipeline.modules()[i]
+            self.assertTrue(isinstance(module, M.MeasureTexture))
+            self.assertEqual(len(module.image_groups), 2)
+            self.assertEqual(module.image_groups[0].image_name, "rawDNA")
+            self.assertEqual(module.image_groups[1].image_name, "rawGFP")
+            self.assertEqual(len(module.object_groups), 2)
+            self.assertEqual(module.object_groups[0].object_name, "Cells")
+            self.assertEqual(module.object_groups[1].object_name, "Nuclei")
+            self.assertEqual(len(module.scale_groups), 2)
+            self.assertEqual(module.scale_groups[0].scale, 3)
+            angles = module.scale_groups[0].angles.get_selections()
+            self.assertEqual(len(angles),2)
+            self.assertTrue(M.H_HORIZONTAL in angles)
+            self.assertTrue(M.H_VERTICAL in angles)
+
+            angles = module.scale_groups[1].angles.get_selections()
+            self.assertEqual(len(angles),2)
+            self.assertTrue(M.H_DIAGONAL in angles)
+            self.assertTrue(M.H_ANTIDIAGONAL in angles)
+
+            self.assertEqual(module.scale_groups[1].scale, 5)
+            self.assertEqual(module.wants_gabor, wants_gabor)
+            self.assertEqual(module.gabor_angles, 6)
 
     def test_02_02_many_objects(self):
         '''Regression test for IMG-775'''
@@ -380,7 +395,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
                 values = m.get_current_measurement(INPUT_OBJECTS_NAME, mname)
                 self.assertTrue(np.all(values != 0))
                 self.assertTrue("%d_%s" % (2, M.H_TO_A[angle]) in all_scales)
-        
+
     def test_03_01_gabor_null(self):
         '''Test for no score on a uniform image'''
         image = np.ones((10,10))*.5
@@ -389,11 +404,11 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
         module.scale_groups[0].scale.value = 2
         module.run(workspace)
         mname = '%s_%s_%s_%d'%(M.TEXTURE, M.F_GABOR, INPUT_IMAGE_NAME, 2)
-        m = workspace.measurements.get_current_measurement(INPUT_OBJECTS_NAME, 
+        m = workspace.measurements.get_current_measurement(INPUT_OBJECTS_NAME,
                                                            mname)
         self.assertEqual(len(m), 1)
         self.assertAlmostEqual(m[0], 0)
-    
+
     def test_03_02_gabor_horizontal(self):
         '''Compare the Gabor score on the horizontal with the one on the diagonal'''
         i,j = np.mgrid[0:10,0:10]
@@ -406,7 +421,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
             module.gabor_angles.value = angles
             module.run(workspace)
             mname = '%s_%s_%s_%d'%(M.TEXTURE, M.F_GABOR, INPUT_IMAGE_NAME, 2)
-            m = workspace.measurements.get_current_measurement(INPUT_OBJECTS_NAME, 
+            m = workspace.measurements.get_current_measurement(INPUT_OBJECTS_NAME,
                                                                mname)
             self.assertEqual(len(m), 1)
             return m[0]
@@ -417,7 +432,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
         self.assertAlmostEqual(himage_2, himage_4)
         self.assertAlmostEqual(dimage_2, 0)
         self.assertNotAlmostEqual(dimage_4,0)
-        
+
     def test_03_02_01_gabor_off(self):
         '''Make sure we can run MeasureTexture without gabor feature'''
         workspace, module = self.make_workspace(np.zeros((10,10)),
@@ -430,24 +445,26 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
         for object_name in (cpmeas.IMAGE, INPUT_OBJECTS_NAME):
             features = m.get_feature_names(object_name)
             self.assertTrue(all([f.find(M.F_GABOR) == -1 for f in features]))
-        
-    def test_03_03_measurement_columns(self):
-        '''Check that results of get_measurement_columns match the actual column names output'''
-        data = 'eJztW91u2zYUph0naFqgSHexBesNd9d2iSA7SZcEQ2vPXjcPsRs0Xn8wbJgi0TEHWjQkKrU39N32GHuEXe4RJtqyJXFyJMuSJ6cSQEiH5seP5/DwHEqyWrXOWe0beCTJsFXr7HcxQfCcKKxLjf4pHFATD/dg3UAKQxqk+ilsUR3+YBFYPoDlw1P55PTgEFZk+QTEOArN1n37tHsMwJZ9vmOXovPTpiMXPIXLF4gxrF+Zm6AEdp36P+3yWjGwcknQa4VYyHQppvVNvUs7o8HspxbVLILaSt/b2D7aVv8SGebL7hTo/HyOh4hc4N+RoMK02St0jU1MdQfv9C/WzngpE3i5HXqfu3YoCHYo2eWhp563/x647UsBdnvgab/jyFjX8DXWLIVA3FeuZqPg/ckh/W34+tsAjXZtjDsOwW0J49ga21klCEfjLfjwBVBxxlsNwe0IvLx00JDtfztUVAb7ClN7SYw/DL8p4LlcR4SYEe0+T/9FcQcRcSUfrgSe7h3KUey9LejJ5Td24DDMHtKc+mX0jWPn5tnZj62IvKJ/v7NXR1y96yNGB0Qx+wvoPW99heGKPlwRtGk0vnm4MH3vCfpy+SUzLfgdoZcKmemblN3C4txnQj9cbqCuYhEGmzzIwQY2kMqoMVrKDxbFlSU58fi4JeCnxxS/7bFbNYQ36jzGyTOyJI+PvbJz4RlX2vEy6flbNF7aupfTjM/z9Et6nhaNH2U5Xnw/WlLvtOYnAHcUR7+nIJrf3wH++eFyvafoOiKVuPG0qTOkm5iNnPoo/dwV+uFyg0KdMmiZyO0nblyKmweT0n9RfjkgDiSpr+gv5Yi4uOtP9Os21VGaeSZoXl7wG03dvv1awk5fxbRT0P5oEX3fhvB9IejL5V+kJ/uPnp9//Yq+fyZ9+Xh8Xafk2U/y/snPf1Q+PF7ADnH3qUH5vvOeQtXeb5nOneAydumF8B8L/FzmdniHFMMxxOGHiWlaVGc91zjjuoYycmuSjGNx8uYbhK96/JnINX8AoKvz/HgR+y2RHyLls7h+E2THF9RAVwa1dG15vcP407q/Cto/xI3raeaDqPf7WdGvGjLOpPJBmnl6nfJB0vl8XeL/qvN+1uJEVtb7qvSTpaP/fZxpP39Jcj+2alxW9lFZm+e0909xcX/turiCgAt637RK+4xfTnEDDaL3E7Se6OVvSGVuR+uyLjzjhljX0CDF/tZlnd12XBWsZp1E7edjs9tt0TercTDXN8fluOzgwvYRnwD/uuIytRjBOvrPRiLN9b0jjIMXN35PRrFOds9a/Lxt+THHZQOXlfiS4/K4m+M+XlwV3Oznef7LcTkux+W424X7u+DixPcbXPa+N+ftf/XwBOWJJ8CfJ7isIkIGBuXfTRlSf/xxjykRqmiTr2ukM/uy6fnQhvMMQniqAk91Hg/WkM5wdzQwbDaL0b7CsCo1ndpzu7Y2reW8vRDeoPfzN/KaSKW6phijGefFtCYKX0Xgq8zj6yPFtAzE0JDZJ6k1ETsT0bWr10+2A/i88120pU8fPrh7k38B4Pcr19/+eR6Hb2OjWLgP/P/zuheCKwG/n4/9Gizm149uaD/VMavt/wXhfSus'
-        # alternate data: 1 image, 1 object, tex scale=3, gabor angles=6
-#        data = 'eJztW91u2zYUph0nW1agSHexFesNd9d2iSA7TZMGQ2vPXjcPsWs0Xrti2DBGomMONGlIVGpv6Hvtco+yy13uESbasiVzciTLP7UzCSCkQ/Hjx3N4eA5lWbVS86z0FTzSdFgrNQ9ahGLYoEi0uNU5hV1uk94+LFsYCWxCzk5hjTP4nUNh/hDmj08LJ6eHBVjQ9ScgwZGp1m67p7+OAdhxzx+6Jevd2vbkTKBI+RwLQdilvQ1y4K5X/6dbXiGLoAuKXyHqYNunGNVXWYs3+93xrRo3HYrrqBNs7B51p3OBLftFawT0bjdID9Nz8htWVBg1e4mviE048/Be/2rtmJcLhVfaofGZb4eMYoecW+4F6mX7b4HfPhditzuB9nueTJhJrojpIApJB12ORyH70yP625robwtU6qUB7iQCt6OMY2dgZ4NiEo83M4HPgLw33mIEbk/hlaWJe+Lg6x4yBOwgYbQXMf4o/LaCl3IZU2rHtPs0/WfFHcbE5SZwOfB4/5Eex967ip5Sfu0GDstuY9Orn0ffJHaunp19X4vJq/r3G3d1JNW73Be8S5HdmUHvaesrCpedwGVBncfjm4aL0veWoq+UXwjbgd9QfoHoWN9511VUfPtUwUu5glvIoQJWZXCDFWJhQ3CrP9f8z4rLa/rC1ueOghsdI9yud17kvCXJK7qmD479vHcRGNesdngcE7fq+VLjoqtzfp75SqrfqudHjRN5fT4/Xda8xpmfmLijefSLinvB/d2eJ5fbiDFMC0nzTZUJzGwi+oFxRPXzkdKPlCscMi6gY2O/n1XN8yjfLUr/Wfn1kDiwSH2T7uPirL84fl3nDC8zv4TNy3P5QMncx6w57HSc0E5h+6BZ9P0hgu9zRV8p/6w9PLj/rPHlS/72qfbFg8F1mdOnP+oHT376vfDuwQx2SLofDcvzzbccGu5+1Pae+OaxSzuC/0Thl7K0wxuMLM8Qj94NTVPjTLR94wzqKqjv1ywyjiXJm68xuWzL3z6u5IM+M6b58YryQ6x8ltRvwuz4nFv40uIOM+fXO4p/Wc9RYfuHpHF9mfmgsGH6FSPGuah8sMw8vUn5YNH5fFPi/6rz/rrFiXVZ76vST9eO3vs4l/27yyL3Y6vGrcs+at3medn7p6S4P+76uIyCC3uvtEr7DF5CSQN14/cTtp74xa/YEH5Hm7IuAuOGhJm4u8T+NmWd3XRcEaxmncTt56bYbV3jQopLcSkuxb2vfcfHYDIuSpk7ghKG/7NRWGZ83lPGIYufj4aj2CS7r1v+u2n5PsWtB25d4kuKS+Nuivv/4orgej9P81+KS3EpLsXdLNzfGR+nvr+QcvC9uGz/S4AnLE88BJN5QsoGprRrcfn9k6V1Bh/p2BrlyBx+JaOduZfVwAczkqcbwVNUeIrTeIiJmSCtftdy2RzBO0gQQ6t6tQ23tjSqlbztCN6w9+/X8trY4MxEVn/MeT6qicNXUPgK0/g6GNmOhQXuCfek1YZicyj6dg36yW4IX3C+s670yb07H1znXwBM+pXvb/88S8K3tZXN3AaT/+O6FYHLgUk/H/g1mM2v71/TfqTjurb/F2wyHOE='
-        cpprefs.set_default_image_directory(os.path.join(example_images_directory(),"ExampleSBSImages"))
-        fd = StringIO(zlib.decompress(base64.b64decode(data)))
-        pipeline = cpp.Pipeline()
-        pipeline.load(fd)
-        module = pipeline.modules()[3]
-        measurements = pipeline.run(image_set_end=1)
-        for x in module.get_measurement_columns(pipeline):
-            assert x[1] in measurements.get_feature_names(x[0]), '%s does not match any measurement output by pipeline'%(str(x))
-        for obname in measurements.get_object_names():
-            for m in measurements.get_feature_names(obname):
-                if m.startswith(M.TEXTURE):
-                    assert (obname, m, 'float') in module.get_measurement_columns(pipeline), 'no entry matching %s in get_measurement_columns.'%((obname, m, 'float'))
+
+    # def test_03_03_measurement_columns(self):
+    #     '''Check that results of get_measurement_columns match the actual column names output'''
+    #     data = 'eJztW91u2zYUph0naFqgSHexBesNd9d2iSA7SZcEQ2vPXjcPsRs0Xn8wbJgi0TEHWjQkKrU39N32GHuEXe4RJtqyJXFyJMuSJ6cSQEiH5seP5/DwHEqyWrXOWe0beCTJsFXr7HcxQfCcKKxLjf4pHFATD/dg3UAKQxqk+ilsUR3+YBFYPoDlw1P55PTgEFZk+QTEOArN1n37tHsMwJZ9vmOXovPTpiMXPIXLF4gxrF+Zm6AEdp36P+3yWjGwcknQa4VYyHQppvVNvUs7o8HspxbVLILaSt/b2D7aVv8SGebL7hTo/HyOh4hc4N+RoMK02St0jU1MdQfv9C/WzngpE3i5HXqfu3YoCHYo2eWhp563/x647UsBdnvgab/jyFjX8DXWLIVA3FeuZqPg/ckh/W34+tsAjXZtjDsOwW0J49ga21klCEfjLfjwBVBxxlsNwe0IvLx00JDtfztUVAb7ClN7SYw/DL8p4LlcR4SYEe0+T/9FcQcRcSUfrgSe7h3KUey9LejJ5Td24DDMHtKc+mX0jWPn5tnZj62IvKJ/v7NXR1y96yNGB0Qx+wvoPW99heGKPlwRtGk0vnm4MH3vCfpy+SUzLfgdoZcKmemblN3C4txnQj9cbqCuYhEGmzzIwQY2kMqoMVrKDxbFlSU58fi4JeCnxxS/7bFbNYQ36jzGyTOyJI+PvbJz4RlX2vEy6flbNF7aupfTjM/z9Et6nhaNH2U5Xnw/WlLvtOYnAHcUR7+nIJrf3wH++eFyvafoOiKVuPG0qTOkm5iNnPoo/dwV+uFyg0KdMmiZyO0nblyKmweT0n9RfjkgDiSpr+gv5Yi4uOtP9Os21VGaeSZoXl7wG03dvv1awk5fxbRT0P5oEX3fhvB9IejL5V+kJ/uPnp9//Yq+fyZ9+Xh8Xafk2U/y/snPf1Q+PF7ADnH3qUH5vvOeQtXeb5nOneAydumF8B8L/FzmdniHFMMxxOGHiWlaVGc91zjjuoYycmuSjGNx8uYbhK96/JnINX8AoKvz/HgR+y2RHyLls7h+E2THF9RAVwa1dG15vcP407q/Cto/xI3raeaDqPf7WdGvGjLOpPJBmnl6nfJB0vl8XeL/qvN+1uJEVtb7qvSTpaP/fZxpP39Jcj+2alxW9lFZm+e0909xcX/turiCgAt637RK+4xfTnEDDaL3E7Se6OVvSGVuR+uyLjzjhljX0CDF/tZlnd12XBWsZp1E7edjs9tt0TercTDXN8fluOzgwvYRnwD/uuIytRjBOvrPRiLN9b0jjIMXN35PRrFOds9a/Lxt+THHZQOXlfiS4/K4m+M+XlwV3Oznef7LcTkux+W424X7u+DixPcbXPa+N+ftf/XwBOWJJ8CfJ7isIkIGBuXfTRlSf/xxjykRqmiTr2ukM/uy6fnQhvMMQniqAk91Hg/WkM5wdzQwbDaL0b7CsCo1ndpzu7Y2reW8vRDeoPfzN/KaSKW6phijGefFtCYKX0Xgq8zj6yPFtAzE0JDZJ6k1ETsT0bWr10+2A/i88120pU8fPrh7k38B4Pcr19/+eR6Hb2OjWLgP/P/zuheCKwG/n4/9Gizm149uaD/VMavt/wXhfSus'
+    #     # alternate data: 1 image, 1 object, tex scale=3, gabor angles=6
+    #     #        data = 'eJztW91u2zYUph0nW1agSHexFesNd9d2iSA7TZMGQ2vPXjcPsWs0Xrti2DBGomMONGlIVGpv6Hvtco+yy13uESbasiVzciTLP7UzCSCkQ/Hjx3N4eA5lWbVS86z0FTzSdFgrNQ9ahGLYoEi0uNU5hV1uk94+LFsYCWxCzk5hjTP4nUNh/hDmj08LJ6eHBVjQ9ScgwZGp1m67p7+OAdhxzx+6Jevd2vbkTKBI+RwLQdilvQ1y4K5X/6dbXiGLoAuKXyHqYNunGNVXWYs3+93xrRo3HYrrqBNs7B51p3OBLftFawT0bjdID9Nz8htWVBg1e4mviE048/Be/2rtmJcLhVfaofGZb4eMYoecW+4F6mX7b4HfPhditzuB9nueTJhJrojpIApJB12ORyH70yP625robwtU6qUB7iQCt6OMY2dgZ4NiEo83M4HPgLw33mIEbk/hlaWJe+Lg6x4yBOwgYbQXMf4o/LaCl3IZU2rHtPs0/WfFHcbE5SZwOfB4/5Eex967ip5Sfu0GDstuY9Orn0ffJHaunp19X4vJq/r3G3d1JNW73Be8S5HdmUHvaesrCpedwGVBncfjm4aL0veWoq+UXwjbgd9QfoHoWN9511VUfPtUwUu5glvIoQJWZXCDFWJhQ3CrP9f8z4rLa/rC1ueOghsdI9yud17kvCXJK7qmD479vHcRGNesdngcE7fq+VLjoqtzfp75SqrfqudHjRN5fT4/Xda8xpmfmLijefSLinvB/d2eJ5fbiDFMC0nzTZUJzGwi+oFxRPXzkdKPlCscMi6gY2O/n1XN8yjfLUr/Wfn1kDiwSH2T7uPirL84fl3nDC8zv4TNy3P5QMncx6w57HSc0E5h+6BZ9P0hgu9zRV8p/6w9PLj/rPHlS/72qfbFg8F1mdOnP+oHT376vfDuwQx2SLofDcvzzbccGu5+1Pae+OaxSzuC/0Thl7K0wxuMLM8Qj94NTVPjTLR94wzqKqjv1ywyjiXJm68xuWzL3z6u5IM+M6b58YryQ6x8ltRvwuz4nFv40uIOM+fXO4p/Wc9RYfuHpHF9mfmgsGH6FSPGuah8sMw8vUn5YNH5fFPi/6rz/rrFiXVZ76vST9eO3vs4l/27yyL3Y6vGrcs+at3medn7p6S4P+76uIyCC3uvtEr7DF5CSQN14/cTtp74xa/YEH5Hm7IuAuOGhJm4u8T+NmWd3XRcEaxmncTt56bYbV3jQopLcSkuxb2vfcfHYDIuSpk7ghKG/7NRWGZ83lPGIYufj4aj2CS7r1v+u2n5PsWtB25d4kuKS+Nuivv/4orgej9P81+KS3EpLsXdLNzfGR+nvr+QcvC9uGz/S4AnLE88BJN5QsoGprRrcfn9k6V1Bh/p2BrlyBx+JaOduZfVwAczkqcbwVNUeIrTeIiJmSCtftdy2RzBO0gQQ6t6tQ23tjSqlbztCN6w9+/X8trY4MxEVn/MeT6qicNXUPgK0/g6GNmOhQXuCfek1YZicyj6dg36yW4IX3C+s670yb07H1znXwBM+pXvb/88S8K3tZXN3AaT/+O6FYHLgUk/H/g1mM2v71/TfqTjurb/F2wyHOE='
+    #     maybe_download_sbs()
+    #     cpprefs.set_default_image_directory(
+    #         os.path.join(example_images_directory(),"ExampleSBSImages"))
+    #     fd = StringIO(zlib.decompress(base64.b64decode(data)))
+    #     pipeline = cpp.Pipeline()
+    #     pipeline.load(fd)
+    #     module = pipeline.modules()[3]
+    #     measurements = pipeline.run(image_set_end=1)
+    #     for x in module.get_measurement_columns(pipeline):
+    #         assert x[1] in measurements.get_feature_names(x[0]), '%s does not match any measurement output by pipeline'%(str(x))
+    #     for obname in measurements.get_object_names():
+    #         for m in measurements.get_feature_names(obname):
+    #             if m.startswith(M.TEXTURE):
+    #                 assert (obname, m, 'float') in module.get_measurement_columns(pipeline), 'no entry matching %s in get_measurement_columns.'%((obname, m, 'float'))
 
     def test_03_04_measurement_columns_with_and_without_gabor(self):
         workspace, module = self.make_workspace(np.zeros((10,10)),
@@ -461,7 +478,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
         columns = module.get_measurement_columns(None)
         ngabor = len(['x' for c in columns if c[1].find(M.F_GABOR) >= 0])
         self.assertEqual(ngabor, 0)
-        
+
     def test_03_05_categories(self):
         workspace, module = self.make_workspace(np.zeros((10,10)),
                                                 np.zeros((10,10),int))
@@ -475,7 +492,20 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
                 self.assertEqual(categories[0], M.TEXTURE)
             else:
                 self.assertEqual(len(categories), 0)
-    
+        module.images_or_objects.value = M.IO_IMAGES
+        categories = module.get_categories(workspace.pipeline, cpmeas.IMAGE)
+        self.assertEqual(len(categories), 1)
+        categories = module.get_categories(
+            workspace.pipeline, INPUT_OBJECTS_NAME)
+        self.assertEqual(len(categories), 0)
+        module.images_or_objects.value = M.IO_OBJECTS
+        categories = module.get_categories(workspace.pipeline, cpmeas.IMAGE)
+        self.assertEqual(len(categories), 0)
+        categories = module.get_categories(
+            workspace.pipeline, INPUT_OBJECTS_NAME)
+        self.assertEqual(len(categories), 1)
+
+
     def test_03_06_measuremements(self):
         workspace, module = self.make_workspace(np.zeros((10,10)),
                                                 np.zeros((10,10),int))
@@ -492,7 +522,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
                     self.assertTrue(M.F_GABOR in features)
                 else:
                     self.assertFalse(M.F_GABOR in features)
-        
+
     def test_04_01_zeros(self):
         '''Make sure the module can run on an empty labels matrix'''
         workspace, module = self.make_workspace(np.zeros((10,10)),
@@ -504,7 +534,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
             if f.startswith(M.TEXTURE):
                 values = m.get_current_measurement(INPUT_OBJECTS_NAME, f)
                 self.assertEqual(len(values),0)
-                
+
     def test_04_02_wrong_size(self):
         '''Regression test for IMG-961: objects & image different size'''
         np.random.seed(42)
@@ -521,7 +551,7 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
                 values = m.get_current_measurement(INPUT_OBJECTS_NAME, f)
                 expected = me.get_current_measurement(INPUT_OBJECTS_NAME, f)
                 self.assertEqual(values, expected)
-    
+
     def test_04_03_mask(self):
         np.random.seed(42)
         image = np.random.uniform(size=(10,30))
@@ -539,3 +569,39 @@ MeasureTexture:[module_num:2|svn_version:\'1\'|variable_revision_number:3|show_w
                 values = m.get_current_measurement(INPUT_OBJECTS_NAME, f)
                 expected = me.get_current_measurement(INPUT_OBJECTS_NAME, f)
                 self.assertEqual(values, expected)
+
+    def test_04_04_no_image_measurements(self):
+        image = np.ones((10,10))*.5
+        labels = np.ones((10,10),int)
+        workspace, module = self.make_workspace(image, labels)
+        assert isinstance(module, M.MeasureTexture)
+        module.images_or_objects.value = M.IO_OBJECTS
+        module.scale_groups[0].scale.value = 2
+        module.run(workspace)
+        m = workspace.measurements
+        self.assertFalse(
+            m.has_feature(
+                cpmeas.IMAGE,
+                "Texture_AngularSecondMoment_%s_2_0" % INPUT_IMAGE_NAME))
+        self.assertTrue(
+            m.has_feature(
+                INPUT_OBJECTS_NAME,
+                "Texture_AngularSecondMoment_%s_2_0" % INPUT_IMAGE_NAME))
+
+    def test_04_05_no_object_measurements(self):
+        image = np.ones((10,10))*.5
+        labels = np.ones((10,10),int)
+        workspace, module = self.make_workspace(image, labels)
+        assert isinstance(module, M.MeasureTexture)
+        module.images_or_objects.value = M.IO_IMAGES
+        module.scale_groups[0].scale.value = 2
+        module.run(workspace)
+        m = workspace.measurements
+        self.assertTrue(
+            m.has_feature(
+                cpmeas.IMAGE,
+                "Texture_AngularSecondMoment_%s_2_0" % INPUT_IMAGE_NAME))
+        self.assertFalse(
+            m.has_feature(
+                INPUT_OBJECTS_NAME,
+                "Texture_AngularSecondMoment_%s_2_0" % INPUT_IMAGE_NAME))

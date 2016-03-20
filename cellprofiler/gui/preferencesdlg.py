@@ -1,23 +1,14 @@
 '''preferencesdlg.py Edit global preferences
-
-CellProfiler is distributed under the GNU General Public License.
-See the accompanying file LICENSE for details.
-
-Copyright (c) 2003-2009 Massachusetts Institute of Technology
-Copyright (c) 2009-2014 Broad Institute
-All rights reserved.
-
-Please see the AUTHORS file for credits.
-
-Website: http://www.cellprofiler.org
 '''
 
-import wx
-import matplotlib.cm
+import os
 import sys
 
-import cellprofiler.preferences as cpprefs
+import matplotlib.cm
+import wx
+
 import cellprofiler.gui.help as cphelp
+import cellprofiler.preferences as cpprefs
 from cellprofiler.gui.htmldialog import HTMLDialog
 
 DIRBROWSE = "Browse"
@@ -28,7 +19,7 @@ CHOICE = "Choice"
 
 class IntegerPreference(object):
     '''User interface info for an integer preference
-    
+
     This signals that a preference should be displayed and edited as
     an integer, optionally limited by a range.
     '''
@@ -36,17 +27,45 @@ class IntegerPreference(object):
         self.minval = minval
         self.maxval = maxval
 
+class ClassPathValidator(wx.PyValidator):
+    def __init__(self):
+        wx.PyValidator.__init__(self)
+
+    def Validate(self, win):
+        ctrl = self.GetWindow()
+        for c in ctrl.Value:
+            if ord(c) > 254:
+                wx.MessageBox(
+                    "Due to technical limitations, the path to the ImageJ plugins "
+                    "folder cannot contain the character, \"%s\"." % c,
+                    caption = "Unsupported character in path name",
+                    style = wx.OK | wx.ICON_ERROR, parent = win)
+                ctrl.SetFocus()
+                return False
+        return True
+
+    def TransferToWindow(self):
+        return True
+
+    def TransferFromWindow(self):
+        return True
+
+    def Clone(self):
+        return ClassPathValidator()
+
 class PreferencesDlg(wx.Dialog):
     '''Display a dialog for setting preferences
-    
+
     The dialog handles fetching current defaults and setting the
     defaults when the user hits OK.
     '''
     def __init__(self, parent=None, ID=-1, title="CellProfiler preferences",
-                 size=wx.DefaultSize, pos=wx.DefaultPosition, 
-                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.THICK_FRAME,
+                 size=wx.DefaultSize, pos=wx.DefaultPosition,
+                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER |
+                 wx.THICK_FRAME,
                  name=wx.DialogNameStr):
         wx.Dialog.__init__(self, parent, ID, title, pos, size, style,name)
+        self.SetExtraStyle(wx.WS_EX_VALIDATE_RECURSIVELY)
         p = self.get_preferences()
         top_sizer = wx.BoxSizer(wx.VERTICAL)
         scrollpanel_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -58,8 +77,6 @@ class PreferencesDlg(wx.Dialog):
 
         sizer = wx.GridBagSizer(len(p),4)
         sizer.SetFlexibleDirection(wx.HORIZONTAL)
-        sizer.AddGrowableCol(1, 10)
-        sizer.AddGrowableCol(3, 1)
         top_sizer.Add(sizer,1, wx.EXPAND|wx.ALL, 5)
         index = 0
         controls = []
@@ -69,9 +86,9 @@ class PreferencesDlg(wx.Dialog):
         for text, getter, setter, ui_info, help_text in p:
             text_ctl = wx.StaticText(scrollpanel, label=text)
             sizer.Add(text_ctl,(index,0))
-            if (getattr(ui_info, "__getitem__", False) and not 
+            if (getattr(ui_info, "__getitem__", False) and not
                 isinstance(ui_info, str)):
-                ctl = wx.ComboBox(scrollpanel, -1, 
+                ctl = wx.ComboBox(scrollpanel, -1,
                                   choices=ui_info, style=wx.CB_READONLY)
                 ctl.SetStringSelection(getter())
             elif ui_info == COLOR:
@@ -81,16 +98,24 @@ class PreferencesDlg(wx.Dialog):
                 ctl = wx.CheckBox(scrollpanel, -1)
                 ctl.Value = getter()
             elif isinstance(ui_info, IntegerPreference):
-                minval = (-sys.maxint if ui_info.minval is None 
+                minval = (-sys.maxint if ui_info.minval is None
                           else ui_info.minval)
-                maxval = (sys.maxint if ui_info.maxval is None 
+                maxval = (sys.maxint if ui_info.maxval is None
                           else ui_info.maxval)
-                ctl = wx.SpinCtrl(scrollpanel, 
+                ctl = wx.SpinCtrl(scrollpanel,
                                   min = minval,
                                   max = maxval,
                                   initial = getter())
             else:
-                ctl = wx.TextCtrl(scrollpanel, -1, getter())
+                if getter == cpprefs.get_ij_plugin_directory:
+                    validator = ClassPathValidator()
+                else:
+                    validator = wx.DefaultValidator
+                current = getter()
+                if current is None:
+                    current = ""
+                ctl = wx.TextCtrl(scrollpanel, -1, current,
+                                  validator = validator)
                 min_height = ctl.GetMinHeight()
                 min_width  = ctl.GetTextExtent("Make sure the window can display this")[0]
                 ctl.SetMinSize((min_width, min_height))
@@ -103,7 +128,7 @@ class PreferencesDlg(wx.Dialog):
                     if dlg.ShowModal() == wx.ID_OK:
                         ctl.Value = dlg.Path
                         dlg.Destroy()
-            elif (isinstance(ui_info, basestring) and 
+            elif (isinstance(ui_info, basestring) and
                   ui_info.startswith(FILEBROWSE)):
                 def on_press(event, ctl=ctl, parent=self, ui_info=ui_info):
                     dlg = wx.FileDialog(parent)
@@ -127,7 +152,7 @@ class PreferencesDlg(wx.Dialog):
                         font = fd.GetChosenFont()
                         name = font.GetFaceName()
                         size = font.GetPointSize()
-                        ctl.Value = "%s, %f"%(name,size) 
+                        ctl.Value = "%s, %f"%(name,size)
                     dlg.Destroy()
             elif ui_info == COLOR:
                 def on_press(event, ctl=ctl, parent=self):
@@ -149,37 +174,43 @@ class PreferencesDlg(wx.Dialog):
             sizer.Add(button, (index, 3))
             self.Bind(wx.EVT_BUTTON, on_help, button)
             index += 1
+
+        sizer.AddGrowableCol(1, 10)
+        sizer.AddGrowableCol(3, 1)
+
         top_sizer.Add(wx.StaticLine(scrollpanel), 0, wx.EXPAND | wx.ALL, 2)
-        btnsizer = wx.StdDialogButtonSizer()
-        
-        btn = wx.Button(self, wx.ID_OK)
-        btn.SetDefault()
-        btnsizer.AddButton(btn)
+        btnsizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        self.Bind(wx.EVT_BUTTON, self.save_preferences, id=wx.ID_OK)
 
-        btn = wx.Button(self, wx.ID_CANCEL)
-        btnsizer.AddButton(btn)
-        btnsizer.Realize()
-
-        self.Sizer.Add(btnsizer, 0, wx.ALIGN_CENTER_HORIZONTAL|wx.ALL, 5)
-        
-        scrollpanel.SetupScrolling(scrollToTop=False)        
+        scrollpanel_sizer.Add(
+            btnsizer, 0, wx.ALIGN_CENTER_HORIZONTAL | wx.ALL, 5)
+        scrollpanel.SetupScrolling(scrollToTop=False)
         self.Fit()
         self.controls = controls
-    
-    
-    def show_modal(self):
-        if self.ShowModal() == wx.ID_OK:
-            p = self.get_preferences()
-            for control, (text, getter, setter, ui_info, help_text) in \
-                zip(self.controls, p):
-                if ui_info == COLOR:
-                    setter(control.BackgroundColour)
-                else:
-                    setter(control.Value)
-    
+
+    def save_preferences(self, event):
+        event.Skip()
+        p = self.get_preferences()
+        for control, (text, getter, setter, ui_info, help_text) in \
+            zip(self.controls, p):
+            if ui_info == COLOR:
+                value = control.BackgroundColour
+            elif ui_info == FILEBROWSE:
+                value = control.Value
+                if not os.path.isfile(value):
+                    continue
+            elif ui_info == DIRBROWSE:
+                value = control.Value
+                if not os.path.isdir(value):
+                    continue
+            else:
+                value = control.Value
+            if value != getter():
+                setter(value)
+
     def get_preferences(self):
         '''Get the list of preferences.
-        
+
         Each row in the list has the following form:
         Title - the text that appears to the right of the edit box
         get_function - retrieves the persistent preference value
@@ -198,21 +229,21 @@ class PreferencesDlg(wx.Dialog):
                  cpprefs.get_default_output_directory,
                  cpprefs.set_default_output_directory,
                  DIRBROWSE, cphelp.DEFAULT_OUTPUT_FOLDER_HELP],
-                [ "Title font", 
-                  self.get_title_font, 
-                  self.set_title_font, 
+                [ "Title font",
+                  self.get_title_font,
+                  self.set_title_font,
                   FONT, cphelp.TITLE_FONT_HELP],
-                ["Table font", 
-                 self.get_table_font, 
-                 self.set_table_font, 
+                ["Table font",
+                 self.get_table_font,
+                 self.set_table_font,
                  FONT, cphelp.TABLE_FONT_HELP],
-                ["Default colormap", 
-                 cpprefs.get_default_colormap, 
-                 cpprefs.set_default_colormap, 
+                ["Default colormap",
+                 cpprefs.get_default_colormap,
+                 cpprefs.set_default_colormap,
                  cmaps, cphelp.DEFAULT_COLORMAP_HELP],
-                ["Window background", 
-                 cpprefs.get_background_color, 
-                 cpprefs.set_background_color, 
+                ["Window background",
+                 cpprefs.get_background_color,
+                 cpprefs.set_background_color,
                  COLOR, cphelp.WINDOW_BACKGROUND_HELP],
                 ["Error color",
                  cpprefs.get_error_color,
@@ -235,6 +266,12 @@ class PreferencesDlg(wx.Dialog):
                  cpprefs.set_interpolation_mode,
                  [cpprefs.IM_NEAREST, cpprefs.IM_BILINEAR, cpprefs.IM_BICUBIC],
                  cphelp.INTERPOLATION_MODE_HELP],
+                ["Intensity normalization",
+                 cpprefs.get_intensity_mode,
+                 cpprefs.set_intensity_mode,
+                 [cpprefs.INTENSITY_MODE_RAW, cpprefs.INTENSITY_MODE_NORMAL,
+                  cpprefs.INTENSITY_MODE_LOG],
+                 cphelp.INTENSITY_MODE_HELP],
                 ["CellProfiler plugins directory",
                  cpprefs.get_plugin_directory,
                  cpprefs.set_plugin_directory,
@@ -243,13 +280,13 @@ class PreferencesDlg(wx.Dialog):
                  cpprefs.get_ij_plugin_directory,
                  cpprefs.set_ij_plugin_directory,
                  DIRBROWSE, cphelp.IJ_PLUGINS_DIRECTORY_HELP],
-                ["Check for updates", 
-                 cpprefs.get_check_new_versions, 
-                 cpprefs.set_check_new_versions, 
+                ["Check for updates",
+                 cpprefs.get_check_new_versions,
+                 cpprefs.set_check_new_versions,
                  CHOICE, cphelp.CHECK_FOR_UPDATES_HELP],
-                ["Display welcome text on startup", 
-                 cpprefs.get_startup_blurb, 
-                 cpprefs.set_startup_blurb, 
+                ["Display welcome text on startup",
+                 cpprefs.get_startup_blurb,
+                 cpprefs.set_startup_blurb,
                  CHOICE, cphelp.SHOW_STARTUP_BLURB_HELP],
                 ["Warn if Java runtime environment not present",
                  cpprefs.get_report_jvm_error,
@@ -272,16 +309,16 @@ class PreferencesDlg(wx.Dialog):
                  cpprefs.set_show_sampling,
                  CHOICE, """<p>Show the sampling menu </p>
                  <p><i>Note that CellProfiler must be restarted after setting.</i></p>
-                 <p>The sampling menu is an interplace for Paramorama, a plugin for an interactive visualization 
+                 <p>The sampling menu is an interplace for Paramorama, a plugin for an interactive visualization
                  program for exploring the parameter space of image analysis algorithms.
-                 will generate a text file, which specifies: (1) all unique combinations of 
-                 the sampled parameter values; (2) the mapping from each combination of parameter values to 
+                 will generate a text file, which specifies: (1) all unique combinations of
+                 the sampled parameter values; (2) the mapping from each combination of parameter values to
                  one or more output images; and (3) the actual output images.</p>
-                 <p>More information on how to use the plugin can be found 
+                 <p>More information on how to use the plugin can be found
                  <a href="http://www.comp.leeds.ac.uk/scsajp/applications/paramorama2/">here</a>.</p>
                  <p><b>References</b>
                  <ul>
-                 <li>Visualization of parameter space for image analysis. Pretorius AJ, Bray MA, Carpenter AE 
+                 <li>Visualization of parameter space for image analysis. Pretorius AJ, Bray MA, Carpenter AE
                  and Ruddle RA. (2011) IEEE Transactions on Visualization and Computer Graphics, 17(12), 2402-2411.</li>
                  </ul>"""],
                 ['Warn if a pipeline was saved in an old version of CellProfiler',
@@ -302,7 +339,7 @@ class PreferencesDlg(wx.Dialog):
                  cphelp.MAX_WORKERS_HELP],
                 ['Temporary folder',
                  cpprefs.get_temporary_directory,
-                 cpprefs.set_temporary_directory,
+                 (lambda x:cpprefs.set_temporary_directory(x, globally=True)),
                  DIRBROWSE,
                  cphelp.TEMP_DIR_HELP],
                 ['Maximum memory for Java (MB)',
@@ -314,22 +351,37 @@ class PreferencesDlg(wx.Dialog):
                  cpprefs.get_save_pipeline_with_project,
                  cpprefs.set_save_pipeline_with_project,
                  cpprefs.SPP_ALL,
-                 cphelp.SAVE_PIPELINE_WITH_PROJECT_HELP]
+                 cphelp.SAVE_PIPELINE_WITH_PROJECT_HELP],
+                ['Folder name regular expression guesses',
+                 cpprefs.get_pathname_re_guess_file,
+                 cpprefs.set_pathname_re_guess_file,
+                 FILEBROWSE,
+                 cphelp.FOLDER_RE_GUESS_HELP],
+                ['File name regular expression guesses',
+                 cpprefs.get_filename_re_guess_file,
+                 cpprefs.set_filename_re_guess_file,
+                 FILEBROWSE,
+                 cphelp.FILE_RE_GUESS_HELP],
+                ['Batch Profiler URL',
+                 cpprefs.get_batchprofiler_url,
+                 cpprefs.set_batchprofiler_url,
+                 None,
+                 cphelp.BATCHPROFILER_URL_HELP]
                 ]
-    
+
     def get_title_font(self):
         return "%s,%f"%(cpprefs.get_title_font_name(),
                          cpprefs.get_title_font_size())
-    
+
     def set_title_font(self, font):
         name, size = font.split(",")
         cpprefs.set_title_font_name(name)
         cpprefs.set_title_font_size(float(size))
-    
+
     def get_table_font(self):
         return "%s,%f"%(cpprefs.get_table_font_name(),
                          cpprefs.get_table_font_size())
-    
+
     def set_table_font(self, font):
         name, size = font.split(",")
         cpprefs.set_table_font_name(name)
@@ -338,10 +390,7 @@ class PreferencesDlg(wx.Dialog):
 if __name__=='__main__':
     class MyApp(wx.App):
         def OnInit(self):
-            wx.InitAllImageHandlers()
             dlg = PreferencesDlg()
             dlg.show_modal()
             return 1
     app = MyApp(0)
- 
-    

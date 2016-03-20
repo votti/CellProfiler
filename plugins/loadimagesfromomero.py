@@ -27,30 +27,22 @@ In the above example the pipeline "mypipeline" will be run with "1" as omero obj
 <li>University of Dundee</li>
 </ul>
 '''
-# CellProfiler is distributed under the GNU General Public License.
-# See the accompanying file LICENSE for details.
-# 
-# Copyright (c) 2003-2009 Massachusetts Institute of Technology
-# Copyright (c) 2009-2014 Broad Institute
-# 
-# Please see the AUTHORS file for credits.
-# 
-# Website: http://www.cellprofiler.org
+
 
 
 # module author: Bram Gerritsen
 # e-mail: b.gerritsen@nki.nl
 
-import numpy as np
-import wx
 import traceback
 
-import cellprofiler.cpmodule as cpm
-import cellprofiler.cpimage as cpimage
-import cellprofiler.measurements as cpmeas
-import cellprofiler.settings as cps
-import cellprofiler.preferences as cpp
+import numpy as np
+import wx
 
+import cellprofiler.cpimage as cpimage
+import cellprofiler.cpmodule as cpm
+import cellprofiler.measurements as cpmeas
+import cellprofiler.preferences as cpp
+import cellprofiler.settings as cps
 #get the default cellprofiler image names for the different
 #channels of an omero image from the loadimages module
 from cellprofiler.modules.loadimages import default_cpimage_name
@@ -216,7 +208,7 @@ class OmeroLoadImages(cpm.CPModule):
 	
 	def create_omero_gateway(self):
 		'''Create omero gateway based on module settings '''
-		if self.omero_client != None:
+		if self.omero_client is not None:
 			self.omero_client.closeSession()
 		self.omero_client, self.omero_session, self.omero_gateway = create_omero_gateway(
 				self.omero_host.value, self.omero_port.value,
@@ -420,7 +412,7 @@ class OmeroLoadImages(cpm.CPModule):
 		p = omero.sys.Parameters()
 		p.map = {}
 		p.map["oid"] = rlong(long(dataset_id))
-		if limit != None:
+		if limit is not None:
 			f = omero.sys.Filter()
 			f.limit = rint(int(limit))
 			p.theFilter = f
@@ -440,7 +432,7 @@ class OmeroLoadImages(cpm.CPModule):
 		p = omero.sys.Parameters()
 		p.map = {}
 		p.map["oid"] = rlong(long(plate_id))
-		if limit != None:
+		if limit is not None:
 			f = omero.sys.Filter()
 			f.limit = rint(int(limit))
 			p.theFilter = f
@@ -569,7 +561,7 @@ class OmeroLoadImages(cpm.CPModule):
 		self.omero_client.closeSession()
 	
 	def display(self, workspace):
-		if workspace.frame != None:
+		if workspace.frame is not None:
 			figure = workspace.create_or_find_figure(title="OmeroLoadImages, image cycle #%d"%(
 				workspace.measurements.image_set_number), subplots = (2, self.channel_count.value))
 			
